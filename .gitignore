@@ -7,3 +7,6 @@ CLAUDE.md
 # Local only: brief for the README writer, decision logs
 BRIEF.md
 *.jsonl
+
+# Icon source drafts
+images/
