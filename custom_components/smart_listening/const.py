@@ -11,6 +11,11 @@ CONF_CLASSIFIER = "classifier"
 CONF_CLASSIFIER_URL = "classifier_url"
 CONF_CLASSIFIER_MODEL = "classifier_model"
 CONF_CLASSIFIER_API_KEY = "classifier_api_key"
+CONF_CLASSIFIER_ACCOUNT = "cloudflare_account_id"
+# Self-hosted Clef: the request field that carries each question's text. New entries use
+# the documented "instructions"; entries without this option (made before 0.2.0) keep
+# "question", which their thresholds were tuned on. Clef scores the two differently.
+CONF_CLEF_FIELD = "clef_question_field"
 CONF_ADDRESS_THRESHOLD = "address_threshold"
 CONF_WAKE_WORD_THRESHOLD = "wake_word_threshold"
 CONF_FOLLOWUP_THRESHOLD = "followup_threshold"
@@ -19,19 +24,31 @@ CONF_DECISION_LOG = "decision_log"
 
 # Classifier backends
 CLASSIFIER_CLEF = "clef"
+CLASSIFIER_CLEF_CLOUD = "clef_cloud"
 CLASSIFIER_JEV = "jev"
 CLASSIFIER_OPENAI = "openai"
 CLASSIFIER_NAME_ONLY = "name_only"
-CLASSIFIERS = [CLASSIFIER_CLEF, CLASSIFIER_JEV, CLASSIFIER_OPENAI, CLASSIFIER_NAME_ONLY]
+CLASSIFIERS = [CLASSIFIER_CLEF, CLASSIFIER_CLEF_CLOUD, CLASSIFIER_JEV, CLASSIFIER_OPENAI, CLASSIFIER_NAME_ONLY]
 
 # TypeSafe Jev (hosted System One API). The model is pinned to a version, as TypeSafe
 # advises when thresholds are tuned: the jev-latest alias moves with each release.
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-1.14.0"
 
+# Clef on Cloudflare Workers AI (same System One request body, wrapped in Cloudflare's
+# usual {"result": ...} reply). "clef" (27B) or "clef-flash" (9B).
+CLEF_CLOUD_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
+CLEF_CLOUD_MODEL = "clef"
+CLEF_CLOUD_MODELS = ("clef", "clef-flash")
+
 # Defaults that differ by classifier (measured on the 2026-11-04 test set).
 CLASSIFIER_DEFAULTS = {
+    # Self-hosted Clef with the documented "instructions" field, kind question first:
+    # 34/38 requests, 1/28 named side talk at 0.5 (NVFP4 build of Cloudflare/clef).
+    CLASSIFIER_CLEF: {"address_threshold": 0.5, CONF_CLEF_FIELD: "instructions"},
     CLASSIFIER_JEV: {"address_threshold": 0.7},
+    # The same model and field as self-hosted Clef above (not measured on Workers AI itself).
+    CLASSIFIER_CLEF_CLOUD: {"address_threshold": 0.5},
 }
 
 DEFAULTS = {
@@ -39,6 +56,7 @@ DEFAULTS = {
     CONF_CLASSIFIER_URL: "",
     CONF_CLASSIFIER_MODEL: "",
     CONF_CLASSIFIER_API_KEY: "",
+    CONF_CLASSIFIER_ACCOUNT: "",
     # Classifier probability that the speech is a request for the assistant.
     CONF_ADDRESS_THRESHOLD: 0.8,
     # Lower bar when the device's wake word model also heard the name.

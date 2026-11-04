@@ -34,6 +34,7 @@ from .const import (
     CONF_CLASSIFIER,
     CONF_CLASSIFIER_API_KEY,
     CONF_CLASSIFIER_MODEL,
+    CONF_CLEF_FIELD,
     CONF_CLASSIFIER_URL,
     CONF_DECISION_LOG,
     CONF_FOLLOWUP_SECONDS,
@@ -139,6 +140,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
             opts[CONF_CLASSIFIER_URL],
             opts[CONF_CLASSIFIER_MODEL],
             opts[CONF_CLASSIFIER_API_KEY],
+            opts.get(CONF_CLEF_FIELD, "question"),
         )
         self._classifier = None
         self._attr_unique_id = entry.entry_id

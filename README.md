@@ -14,7 +14,7 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored
 - ✅ **Short Commands Always Work**: "Nova, stop", "Nova, louder" and similar are answered without a model call
 - ✅ **Honest LEDs**: The thinking ring lights only once a request has been accepted, so the device stays dark while it ignores the TV
-- ✅ **Choice of Classifier**: Clef (local), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
+- ✅ **Choice of Classifier**: Clef (self-hosted or on Cloudflare), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
 - ✅ **Several Assistants**: One config entry per assistant, each with its own names and conversation agent
 - ✅ **Per-Device Off Switch**: Turn Smart Listening off on any Voice PE to get the stock wake word behaviour back
 - ✅ **Decision Log**: Optional log of every decision, with scores, for tuning
@@ -134,7 +134,7 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 | Conversation agent | | The agent that answers accepted requests |
 | Assistant names | | Names the assistant answers to, comma separated |
 | Classifier | Clef | How speech containing the name is judged |
-| Request threshold | 0.8 (Jev 0.7) | How sure the classifier must be that speech containing the name is a request |
+| Request threshold | Clef 0.5, Jev 0.7, others 0.8 | How sure the classifier must be that speech containing the name is a request |
 | Request threshold when the wake word was heard | 0.6 | Used instead when the device's wake word model also heard the name |
 | Follow-up threshold | 0.8 | How sure the classifier must be that speech after a reply continues the conversation |
 | Follow-up window | 20 s | How long after a reply speech without the name is checked as a follow-up. 0 turns follow-ups off |
@@ -144,8 +144,15 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 
 The classifier is only asked about speech that contains the name (or something close to it), and about speech inside the follow-up window. Everything else is ignored without a model call.
 
-#### Clef (local)
-A self-hosted System One decision server on your network. Enter the full decision endpoint, for example `http://192.168.1.20:8080/v1/systemone`. Typically 70 to 100 ms per decision, and nothing leaves your network. The default thresholds were measured on Clef.
+[Clef](https://huggingface.co/Cloudflare/clef) is Cloudflare's open-weight decision model (Apache 2.0), API-compatible with TypeSafe's Jev. You can run it yourself or use it on Cloudflare Workers AI. Both use the same model and the same request, so the same default threshold.
+
+#### Clef (self-hosted)
+Download [`Cloudflare/clef`](https://huggingface.co/Cloudflare/clef) from Hugging Face and serve it with SGLang, as the model card describes; the server answers at `/v1/systemone`. The full model needs a large GPU (around 55 GB of weights in BF16); community quantised builds, such as NVFP4, need less. Enter the full decision endpoint, for example `http://192.168.1.20:30000/v1/systemone`, and the model name your server uses (`Cloudflare/clef` on SGLang). Typically 70 to 100 ms per decision on a local GPU, and nothing leaves your network.
+
+#### Clef on Cloudflare Workers AI
+The same model, hosted by Cloudflare (`@cf/cloudflare/clef`), for when you do not have a GPU for it. You need your Cloudflare account ID and an API token with Workers AI permission. Choose `clef`, or `clef-flash` for the smaller, cheaper model. Cloudflare lists Clef at $0.24 per million input tokens with zero data retention. Its speed and scores on Workers AI have not been measured for Smart Listening yet; the threshold is the one measured on the self-hosted weights, and `clef-flash` may need its own.
+
+Transcripts that contain the name, and speech inside the follow-up window, are sent to Cloudflare. If Workers AI cannot be reached, Smart Listening falls back to the name-only rule below.
 
 #### Jev (TypeSafe, cloud)
 TypeSafe's hosted System One model, for when you do not run a decision server yourself. You need an API key from TypeSafe. The model is pinned to `jev-1.14.0`, because `jev-latest` changes with each release and thresholds are tuned to one version. Around 150 to 180 ms per decision. Pricing is per input token (output is free), which comes to pennies a month for a household.
@@ -166,7 +173,7 @@ Measured on 66 real transcripts from one home: 38 requests to the assistant, and
 | --- | --- | --- | --- |
 | Jev `jev-1.14.0` | 0.7 | 37 of 38 | 1 of 28 |
 | Jev `jev-1.14.0` | 0.6 | 38 of 38 | 2 of 28 |
-| Clef | 0.8 | 34 of 38 | 1 of 28 |
+| Clef (self-hosted, NVFP4 build) | 0.5 | 34 of 38 | 1 of 28 |
 
 On follow-ups, Jev accepted all 7 genuine follow-ups and none of the 5 unrelated lines, at any threshold from 0.5 to 0.8.
 
@@ -182,7 +189,7 @@ Turn on the decision log while tuning. Each line holds the transcript, the name 
 
 Smart Listening changes what your Voice PEs send off the device:
 - **Every unmuted Voice PE transcribes all the speech it hears**, not just requests. Transcripts come from your speech-to-text engine: use a local one if that matters to you, and mute devices in rooms where you do not want this
-- **Transcripts that contain the name**, and speech shortly after a reply, go to the classifier. With Clef or a local model they stay on your network; with Jev or a cloud endpoint they do not
+- **Transcripts that contain the name**, and speech shortly after a reply, go to the classifier. With self-hosted Clef or a local model they stay on your network; with Clef on Cloudflare, Jev or a cloud endpoint they do not
 - **Ignored speech is not stored** in Home Assistant: no reply and no chat history
 - **The decision log stores transcripts** of everything judged. It is off by default; delete `config/smart_listening/decisions.jsonl` when you have finished tuning
 

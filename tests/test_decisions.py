@@ -308,3 +308,103 @@ async def test_kind_question_is_asked_first():
 
     await decide(make_agent(Recorder(address=0.9)), "Nova, what time is it?")
     assert seen[0] == [cl.KIND, cl.ADDRESS]
+
+
+class _CFResp(_SOResp):
+    def json(self):
+        return {"result": {"model": "clef", "answers": self._answers}, "success": True, "errors": []}
+
+
+class _CFClient(_SOClient):
+    async def post(self, url, **kw):
+        self.sent.append((url, kw))
+        answers = {}
+        for k, q in kw["json"]["questions"].items():
+            if q["type"] == "noul":
+                answers[k] = {"type": "noul", "noul": 0.5}
+            else:
+                answers[k] = {"type": "choice", "probabilities": {c: 0.9 if c in ("yes", "command") else 0.05 for c in q["criteria"]}}
+        return _CFResp(answers)
+
+
+@pytest.mark.asyncio
+async def test_clef_cloud_request_and_reply(monkeypatch):
+    from custom_components.smart_listening.config_flow import _validate_classifier
+
+    client = _CFClient()
+    monkeypatch.setattr(cl, "get_async_client", lambda hass: client)
+    data = {"classifier": "clef_cloud", "cloudflare_account_id": " abc123 ", "classifier_model": "",
+            "classifier_api_key": "cf-token"}
+    errors = {}
+    await _validate_classifier(None, data, errors)  # sends one tiny test decision
+    assert errors == {}
+    url = "https://api.cloudflare.com/client/v4/accounts/abc123/ai/run/@cf/cloudflare/clef"
+    assert data["classifier_url"] == url and data["classifier_model"] == "clef"
+
+    c = cl.make_classifier(None, "clef_cloud", data["classifier_url"], data["classifier_model"], data["classifier_api_key"])
+    r = await c.address("Nova, what time is it?", "Nova")
+    sent_url, kw = client.sent[-1]
+    body = kw["json"]
+    assert sent_url == url and kw["headers"] == {"Authorization": "Bearer cf-token"}
+    assert body["model"] == "clef" and "images" not in body
+    assert list(body["questions"]) == [cl.KIND, cl.ADDRESS]
+    assert "instructions" in body["questions"][cl.ADDRESS] and "question" not in body["questions"][cl.ADDRESS]
+    assert r["p"] == 0.9  # unwrapped from Cloudflare's {"result": ...}
+
+
+@pytest.mark.asyncio
+async def test_clef_cloud_validation_errors():
+    from custom_components.smart_listening.config_flow import _validate_classifier
+
+    for data, field, code in (
+        ({"classifier": "clef_cloud", "classifier_api_key": "t"}, "cloudflare_account_id", "no_account"),
+        ({"classifier": "clef_cloud", "cloudflare_account_id": "a", "classifier_model": "llama", "classifier_api_key": "t"},
+         "classifier_model", "invalid_clef_model"),
+        ({"classifier": "clef_cloud", "cloudflare_account_id": "a"}, "classifier_api_key", "no_api_key"),
+    ):
+        errors = {}
+        await _validate_classifier(None, data, errors)
+        assert errors == {field: code}
+
+
+def test_switching_classifier_resets_endpoint_and_threshold():
+    from custom_components.smart_listening.config_flow import _switch_classifier
+
+    current = {"classifier": "clef", "classifier_url": "http://clef:8080/v1/systemone", "classifier_model": "",
+               "address_threshold": 0.8}
+    to_jev = {**current, "classifier": "jev", "classifier_api_key": "k"}
+    _switch_classifier(current, to_jev)
+    assert to_jev["classifier_url"] == "" and to_jev["address_threshold"] == 0.7
+
+    to_cf = {**current, "classifier": "clef_cloud", "address_threshold": 0.65}
+    _switch_classifier(current, to_cf)
+    assert to_cf["address_threshold"] == 0.65  # changed on the same screen: kept
+
+    back = {"classifier": "clef", "classifier_url": "http://clef:8080/v1/systemone", "address_threshold": 0.7}
+    _switch_classifier({**back, "classifier": "jev"}, back)
+    assert back["address_threshold"] == 0.5 and back["classifier_url"] == "http://clef:8080/v1/systemone"
+
+
+@pytest.mark.asyncio
+async def test_new_clef_entries_use_instructions(monkeypatch):
+    from custom_components.smart_listening.const import CLASSIFIER_DEFAULTS
+
+    client = _SOClient()
+    monkeypatch.setattr(cl, "get_async_client", lambda hass: client)
+    field = CLASSIFIER_DEFAULTS["clef"]["clef_question_field"]
+    assert field == "instructions" and CLASSIFIER_DEFAULTS["clef"]["address_threshold"] == 0.5
+    c = cl.make_classifier(None, "clef", "http://clef:30000/v1/systemone", "Cloudflare/clef", "", field)
+    await c.address("Nova, what time is it?", "Nova")
+    body = client.sent[0][1]["json"]
+    assert body["model"] == "Cloudflare/clef" and body["images"] == []
+    assert list(body["questions"]) == [cl.KIND, cl.ADDRESS]
+    assert "instructions" in body["questions"][cl.ADDRESS] and "question" not in body["questions"][cl.ADDRESS]
+
+
+def test_switching_to_clef_sets_its_field():
+    from custom_components.smart_listening.config_flow import _switch_classifier
+
+    current = {"classifier": "jev", "classifier_url": "https://api.typesafe.ai/v1/systemone", "address_threshold": 0.7}
+    to_clef = {**current, "classifier": "clef", "classifier_url": "http://clef:30000/v1/systemone"}
+    _switch_classifier(current, to_clef)
+    assert to_clef["clef_question_field"] == "instructions" and to_clef["address_threshold"] == 0.5

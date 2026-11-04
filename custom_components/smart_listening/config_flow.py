@@ -17,16 +17,22 @@ from homeassistant.helpers import selector
 from .classifier import make_classifier
 from .const import (
     CLASSIFIER_CLEF,
+    CLASSIFIER_CLEF_CLOUD,
     CLASSIFIER_DEFAULTS,
     CLASSIFIER_JEV,
     CLASSIFIER_NAME_ONLY,
     CLASSIFIER_OPENAI,
     CLASSIFIERS,
+    CLEF_CLOUD_MODEL,
+    CLEF_CLOUD_MODELS,
+    CLEF_CLOUD_URL,
     CONF_ADDRESS_THRESHOLD,
     CONF_CLASSIFIER,
+    CONF_CLASSIFIER_ACCOUNT,
     CONF_CLASSIFIER_API_KEY,
     CONF_CLASSIFIER_MODEL,
     CONF_CLASSIFIER_URL,
+    CONF_CLEF_FIELD,
     CONF_DECISION_LOG,
     CONF_FOLLOWUP_SECONDS,
     CONF_FOLLOWUP_THRESHOLD,
@@ -71,6 +77,21 @@ async def _validate_classifier(hass, data: dict[str, Any], errors: dict[str, str
     kind = data.get(CONF_CLASSIFIER, CLASSIFIER_NAME_ONLY)
     if kind == CLASSIFIER_NAME_ONLY:
         return
+    if kind == CLASSIFIER_CLEF_CLOUD:
+        account = data.get(CONF_CLASSIFIER_ACCOUNT, "").strip()
+        model = data.get(CONF_CLASSIFIER_MODEL, "").strip() or CLEF_CLOUD_MODEL
+        if not account:
+            errors[CONF_CLASSIFIER_ACCOUNT] = "no_account"
+            return
+        if model not in CLEF_CLOUD_MODELS:
+            errors[CONF_CLASSIFIER_MODEL] = "invalid_clef_model"
+            return
+        if not data.get(CONF_CLASSIFIER_API_KEY, "").strip():
+            errors[CONF_CLASSIFIER_API_KEY] = "no_api_key"
+            return
+        data[CONF_CLASSIFIER_ACCOUNT] = account
+        data[CONF_CLASSIFIER_MODEL] = model
+        data[CONF_CLASSIFIER_URL] = CLEF_CLOUD_URL.format(account=account, model=model)
     if kind == CLASSIFIER_JEV:
         data.setdefault(CONF_CLASSIFIER_URL, "")
         data[CONF_CLASSIFIER_URL] = data[CONF_CLASSIFIER_URL] or JEV_URL
@@ -90,11 +111,31 @@ async def _validate_classifier(hass, data: dict[str, Any], errors: dict[str, str
         data.get(CONF_CLASSIFIER_URL, ""),
         data.get(CONF_CLASSIFIER_MODEL, ""),
         data.get(CONF_CLASSIFIER_API_KEY, ""),
+        data.get(CONF_CLEF_FIELD, "question"),
     )
     try:
         await classifier.check()
     except Exception:  # noqa: BLE001
         errors["base"] = "cannot_connect"
+
+
+def _switch_classifier(current: dict[str, Any], candidate: dict[str, Any]) -> None:
+    """When the options change to a different classifier, drop the old one's endpoint
+    (Jev and Clef on Cloudflare fill in their own) and use the new one's measured request
+    threshold, unless that threshold was changed on the same screen."""
+    kind = candidate[CONF_CLASSIFIER]
+    if kind == current[CONF_CLASSIFIER]:
+        return
+    if kind in (CLASSIFIER_JEV, CLASSIFIER_CLEF_CLOUD):
+        for key in (CONF_CLASSIFIER_URL, CONF_CLASSIFIER_MODEL):
+            if candidate.get(key) == current.get(key):
+                candidate[key] = ""
+    defaults = CLASSIFIER_DEFAULTS.get(kind, {})
+    if candidate[CONF_ADDRESS_THRESHOLD] == current[CONF_ADDRESS_THRESHOLD]:
+        candidate[CONF_ADDRESS_THRESHOLD] = defaults.get(CONF_ADDRESS_THRESHOLD, DEFAULTS[CONF_ADDRESS_THRESHOLD])
+    for key, value in defaults.items():
+        if key != CONF_ADDRESS_THRESHOLD:
+            candidate[key] = value
 
 
 class SmartListeningConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -150,9 +191,19 @@ class SmartListeningConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_CLASSIFIER_URL): _URL,
             }
             suggested = {CONF_CLASSIFIER_MODEL: JEV_MODEL, CONF_CLASSIFIER_URL: JEV_URL}
+        elif kind == CLASSIFIER_CLEF_CLOUD:
+            fields = {
+                vol.Required(CONF_CLASSIFIER_ACCOUNT): _TEXT,
+                vol.Required(CONF_CLASSIFIER_API_KEY): _PASSWORD,
+                vol.Required(CONF_CLASSIFIER_MODEL): _TEXT,
+            }
+            suggested = {CONF_CLASSIFIER_MODEL: CLEF_CLOUD_MODEL}
         else:
             fields = {vol.Required(CONF_CLASSIFIER_URL): _URL}
             suggested = {}
+            if kind == CLASSIFIER_CLEF:
+                fields[vol.Optional(CONF_CLASSIFIER_MODEL)] = _TEXT
+                suggested = {CONF_CLASSIFIER_MODEL: "clef"}
             if kind == CLASSIFIER_OPENAI:
                 fields[vol.Required(CONF_CLASSIFIER_MODEL)] = _TEXT
                 fields[vol.Optional(CONF_CLASSIFIER_API_KEY)] = _PASSWORD
@@ -178,6 +229,7 @@ class SmartListeningOptionsFlow(OptionsFlow):
         current = {**DEFAULTS, **self.config_entry.options}
         if user_input is not None:
             candidate = {**current, **user_input}
+            _switch_classifier(current, candidate)
             _validate_basics(candidate, errors)
             if not errors:
                 await _validate_classifier(self.hass, candidate, errors)
@@ -193,6 +245,7 @@ class SmartListeningOptionsFlow(OptionsFlow):
                         vol.Required(CONF_NAMES): _TEXT,
                         vol.Required(CONF_CLASSIFIER): _CLASSIFIER,
                         vol.Optional(CONF_CLASSIFIER_URL): _URL,
+                        vol.Optional(CONF_CLASSIFIER_ACCOUNT): _TEXT,
                         vol.Optional(CONF_CLASSIFIER_MODEL): _TEXT,
                         vol.Optional(CONF_CLASSIFIER_API_KEY): _PASSWORD,
                         vol.Required(CONF_ADDRESS_THRESHOLD): _PROBABILITY,

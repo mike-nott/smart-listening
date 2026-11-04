@@ -6,7 +6,7 @@ each choice: {"ms": 67, "answers": {"q2": {"yes": 0.93, "no": 0.07}}}, or
 
 The question keys, wording and order are the ones the default thresholds were measured
 with on Clef (2026-11-03/04). Clef scores shift when keys, field names or the order of
-questions change, so keep them as they are. Jev has not been measured yet.
+questions change, so keep them as they are. Jev has its own wording (see JevClassifier).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from homeassistant.helpers.httpx_client import get_async_client
 
 from .const import (
     CLASSIFIER_CLEF,
+    CLASSIFIER_CLEF_CLOUD,
     CLASSIFIER_JEV,
     CLASSIFIER_OPENAI,
     CLASSIFIER_TIMEOUT,
@@ -146,6 +147,8 @@ class SystemOneClassifier(Classifier):
         )
         resp.raise_for_status()
         data = resp.json()
+        if "answers" not in data and isinstance(data.get("result"), dict):
+            data = data["result"]  # Cloudflare's REST API wraps replies in "result"
         answers: dict[str, dict[str, float]] = {}
         for k, v in (data.get("answers") or {}).items():
             # Choice answers carry "probabilities"; yes/no (noul) answers a single "noul".
@@ -154,14 +157,16 @@ class SystemOneClassifier(Classifier):
 
 
 class ClefClassifier(SystemOneClassifier):
-    """Local Clef server. Sent exactly as the default thresholds were measured: the question
-    text in "question" and an empty "images" list. (Clef scores the documented
-    "instructions" field quite differently, so do not switch without re-measuring.)"""
+    """Self-hosted Clef (Cloudflare/clef or a quantised build, served with SGLang or another
+    System One server), with an empty "images" list. The question text goes in
+    `text_field`: the documented "instructions" for new entries, or "question" for entries
+    tuned before 0.2.0. Clef scores the two differently, so each has its own threshold."""
 
-    text_field = "question"
-
-    def __init__(self, hass: HomeAssistant, url: str, model: str = "", api_key: str = "") -> None:
+    def __init__(
+        self, hass: HomeAssistant, url: str, model: str = "", api_key: str = "", text_field: str = "question"
+    ) -> None:
         super().__init__(hass, url, model or "clef", api_key)
+        self.text_field = text_field
 
     def _payload(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
         return {**super()._payload(state, questions), "images": []}
@@ -169,6 +174,27 @@ class ClefClassifier(SystemOneClassifier):
     async def check(self) -> None:
         base = self.url.split("/v1/")[0].rstrip("/")
         resp = await get_async_client(self.hass).get(f"{base}/health", timeout=10)
+        resp.raise_for_status()
+
+
+class ClefCloudClassifier(SystemOneClassifier):
+    """Clef on Cloudflare Workers AI. The URL holds the account id (built by the setup
+    screen) and the key is a Cloudflare API token with Workers AI access. Uses the
+    documented "instructions" field, which is what its default threshold was measured on."""
+
+    def __init__(self, hass: HomeAssistant, url: str, model: str = "", api_key: str = "") -> None:
+        super().__init__(hass, url, model or "clef", api_key)
+
+    async def check(self) -> None:
+        # Workers AI has no free endpoint that proves the token can run the model, so
+        # make one tiny decision (a few dozen input tokens).
+        resp = await get_async_client(self.hass).post(
+            self.url,
+            json={"model": self.model, "state": "ok",
+                  "questions": {"ok": {"type": "noul", "instructions": "Is this a test?"}}},
+            headers=self._headers(),
+            timeout=CLASSIFIER_TIMEOUT,
+        )
         resp.raise_for_status()
 
 
@@ -283,11 +309,13 @@ class OpenAIClassifier(Classifier):
 
 
 def make_classifier(
-    hass: HomeAssistant, kind: str, url: str, model: str, api_key: str
+    hass: HomeAssistant, kind: str, url: str, model: str, api_key: str, clef_field: str = "question"
 ) -> Classifier | None:
     """The configured backend, or None for name-only mode."""
     if kind == CLASSIFIER_CLEF:
-        return ClefClassifier(hass, url)
+        return ClefClassifier(hass, url, model, api_key, clef_field)
+    if kind == CLASSIFIER_CLEF_CLOUD:
+        return ClefCloudClassifier(hass, url, model, api_key)
     if kind == CLASSIFIER_JEV:
         return JevClassifier(hass, url, model, api_key)
     if kind == CLASSIFIER_OPENAI:
