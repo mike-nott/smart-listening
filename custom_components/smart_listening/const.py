@@ -29,6 +29,14 @@ CLASSIFIER_JEV = "jev"
 CLASSIFIER_OPENAI = "openai"
 CLASSIFIER_NAME_ONLY = "name_only"
 CLASSIFIERS = [CLASSIFIER_CLEF, CLASSIFIER_CLEF_CLOUD, CLASSIFIER_JEV, CLASSIFIER_OPENAI, CLASSIFIER_NAME_ONLY]
+# Shown as the agent's device model.
+CLASSIFIER_DISPLAY_NAMES = {
+    CLASSIFIER_CLEF: "Clef",
+    CLASSIFIER_CLEF_CLOUD: "Clef on Cloudflare",
+    CLASSIFIER_JEV: "Jev",
+    CLASSIFIER_OPENAI: "OpenAI-compatible",
+    CLASSIFIER_NAME_ONLY: "Name only",
+}
 
 # TypeSafe Jev (hosted System One API). The model is pinned to a version, as TypeSafe
 # advises when thresholds are tuned: the jev-latest alias moves with each release.

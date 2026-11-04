@@ -25,11 +25,12 @@ from homeassistant.components.conversation.agent_manager import async_get_agent
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED, MATCH_ALL, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er, intent
+from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
 from homeassistant.util import dt as dt_util
 
 from .classifier import make_classifier
 from .const import (
+    CLASSIFIER_DISPLAY_NAMES,
     CONF_ADDRESS_THRESHOLD,
     CONF_CLASSIFIER,
     CONF_CLASSIFIER_API_KEY,
@@ -47,6 +48,7 @@ from .const import (
     DEVICE_SWITCH,
     DEVICE_THINKING,
     DEVICE_WAKE_WORD,
+    DOMAIN,
     ECHO_SIMILARITY,
     LOG_FILE,
     LOG_MAX_BYTES,
@@ -144,7 +146,16 @@ class SmartListeningAgent(conversation.ConversationEntity):
         )
         self._classifier = None
         self._attr_unique_id = entry.entry_id
-        self._attr_name = f"Smart Listening {entry.title}"
+        # Named like MCP Assist agents ("OpenClaw - Lorelai"), with a service device.
+        self._attr_name = f"Smart Listening - {entry.title}"
+        self._attr_suggested_object_id = f"smart_listening_{entry.title.lower().replace(' ', '_')}"
+        self._attr_device_info = dr.DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=f"Smart Listening - {entry.title}",
+            manufacturer="Smart Listening",
+            model=CLASSIFIER_DISPLAY_NAMES.get(self._classifier_kind, self._classifier_kind),
+            entry_type=dr.DeviceEntryType.SERVICE,
+        )
         # device_id -> (monotonic time of the last reply, its text)
         self._last_reply: dict[str, tuple[float, str]] = {}
         # assist_satellite entity_id -> when it last started listening (start of a run)

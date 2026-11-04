@@ -80,11 +80,11 @@ Go to **Settings → Devices & services → Add integration → Smart Listening*
 - **Assistant names**: the names the assistant answers to, separated by commas, for example `Nova, Hey Nova`. The first is the main name
 - **Classifier**: how speech containing the name is judged
 
-This creates a conversation agent called **Smart Listening Nova**.
+This creates a conversation agent called **Smart Listening - Nova**.
 
 ### 2. Create an Assist pipeline
 
-Go to **Settings → Voice assistants → Add assistant**. Pick your speech-to-text and text-to-speech engines as usual, and set the **Conversation agent** to **Smart Listening Nova**.
+Go to **Settings → Voice assistants → Add assistant**. Pick your speech-to-text and text-to-speech engines as usual, and set the **Conversation agent** to **Smart Listening - Nova**.
 
 If you rename this pipeline later, re-select it on every Voice PE straight away: devices fall back to the preferred pipeline when the name they stored no longer exists.
 

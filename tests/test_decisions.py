@@ -408,3 +408,12 @@ def test_switching_to_clef_sets_its_field():
     to_clef = {**current, "classifier": "clef", "classifier_url": "http://clef:30000/v1/systemone"}
     _switch_classifier(current, to_clef)
     assert to_clef["clef_question_field"] == "instructions" and to_clef["address_threshold"] == 0.5
+
+
+def test_agent_named_like_mcp_assist():
+    agent = make_agent()
+    assert agent.name == "Smart Listening - Nova"
+    assert agent._attr_suggested_object_id == "smart_listening_nova"
+    info = agent.device_info
+    assert info["name"] == "Smart Listening - Nova" and info["manufacturer"] == "Smart Listening"
+    assert info["model"] == "Clef" and ("smart_listening", "e1") in info["identifiers"]
