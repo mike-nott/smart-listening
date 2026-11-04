@@ -55,14 +55,17 @@ Requests that do not come from speech detection (the centre button, or a wake wo
 
 ## Installation
 
-### Add to HACS
-
-[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mike-nott&repository=smart-listening&category=integration)
-
 ### Option A: HACS (Recommended)
-1. Click the badge above, or in HACS add `https://github.com/mike-nott/smart-listening` as a custom repository (type: Integration)
-2. Install "Smart Listening"
+
+Smart Listening is in the HACS default repositories.
+
+1. In Home Assistant, open **HACS** and search for **Smart Listening**
+2. Open it and select **Download**
 3. Restart Home Assistant
+
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mike-nott&repository=smart-listening&category=integration)
+
+If Smart Listening does not show up in the search, add it as a custom repository instead: in HACS, open the **⋮** menu → **Custom repositories**, enter `https://github.com/mike-nott/smart-listening` with the type **Integration**, then download it as above.
 
 ### Option B: Manual
 1. Copy `custom_components/smart_listening` into your Home Assistant `config/custom_components/` folder
