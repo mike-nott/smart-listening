@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a Smart Listening agent",
+        "description": "Voice PE devices with the Smart Listening firmware start a request whenever they hear speech. This agent decides which speech is meant for the assistant and passes only that on.",
+        "data": {
+          "target_agent": "Conversation agent",
+          "assistant_names": "Assistant names",
+          "classifier": "Classifier"
+        },
+        "data_description": {
+          "target_agent": "The agent that answers accepted requests, for example your LLM or Assist agent.",
+          "assistant_names": "Names the assistant answers to, separated by commas. The first is the main name.",
+          "classifier": "How overheard speech is judged when it contains the name or follows a reply."
+        }
+      },
+      "classifier": {
+        "title": "Classifier settings",
+        "description": "Connection details for the {classifier} classifier.",
+        "data": {
+          "classifier_url": "URL",
+          "classifier_model": "Model",
+          "classifier_api_key": "API key"
+        },
+        "data_description": {
+          "classifier_url": "Clef: the full decision endpoint, for example http://192.168.1.20:8080/v1/systemone. Jev: leave as is. OpenAI-compatible: the base URL, for example http://192.168.1.20:11434/v1.",
+          "classifier_model": "Model name as the server knows it. For Jev, a pinned version such as jev-1.14.0 keeps answers stable; jev-latest changes with each release.",
+          "classifier_api_key": "Required for Jev (from the TypeSafe console). Leave empty for local servers that do not need one."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the classifier. Check the URL and that the server is running.",
+      "invalid_url": "Enter a URL starting with http:// or https://.",
+      "no_model": "Enter the model name.",
+      "no_names": "Enter at least one name.",
+      "target_is_self": "Choose a different agent: a Smart Listening agent cannot pass requests to itself.",
+      "no_api_key": "Enter the API key."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Listening settings",
+        "data": {
+          "target_agent": "Conversation agent",
+          "assistant_names": "Assistant names",
+          "classifier": "Classifier",
+          "classifier_url": "Classifier URL",
+          "classifier_model": "Classifier model",
+          "classifier_api_key": "Classifier API key",
+          "address_threshold": "Request threshold",
+          "wake_word_threshold": "Request threshold when the wake word was heard",
+          "followup_threshold": "Follow-up threshold",
+          "followup_seconds": "Follow-up window",
+          "decision_log": "Decision log"
+        },
+        "data_description": {
+          "address_threshold": "How sure the classifier must be that speech containing the name is a request. Higher means fewer false replies and more missed requests.",
+          "wake_word_threshold": "Used instead when the device's wake word model also heard the name.",
+          "followup_threshold": "How sure the classifier must be that speech after a reply, without the name, continues the conversation.",
+          "followup_seconds": "How long after a reply speech without the name is checked as a follow-up. 0 turns follow-ups off.",
+          "decision_log": "Write every decision and its transcript to smart_listening/decisions.jsonl in the config folder. This records what people in the home say."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the classifier. Check the URL and that the server is running.",
+      "invalid_url": "Enter a URL starting with http:// or https://.",
+      "no_model": "Enter the model name.",
+      "no_names": "Enter at least one name.",
+      "target_is_self": "Choose a different agent: a Smart Listening agent cannot pass requests to itself.",
+      "no_api_key": "Enter the API key."
+    }
+  },
+  "selector": {
+    "classifier": {
+      "options": {
+        "clef": "Clef (local System One server)",
+        "jev": "Jev (TypeSafe's hosted System One model, needs an API key)",
+        "openai": "OpenAI-compatible endpoint (Ollama, vLLM, LM Studio or a cloud API)",
+        "name_only": "Name only (no classifier: answer when the name is among the first words)"
+      }
+    }
+  }
+}

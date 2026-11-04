@@ -1,0 +1,83 @@
+"""Constants for the Smart Listening integration."""
+
+from __future__ import annotations
+
+DOMAIN = "smart_listening"
+
+# Config entry options
+CONF_TARGET_AGENT = "target_agent"
+CONF_NAMES = "assistant_names"
+CONF_CLASSIFIER = "classifier"
+CONF_CLASSIFIER_URL = "classifier_url"
+CONF_CLASSIFIER_MODEL = "classifier_model"
+CONF_CLASSIFIER_API_KEY = "classifier_api_key"
+CONF_ADDRESS_THRESHOLD = "address_threshold"
+CONF_WAKE_WORD_THRESHOLD = "wake_word_threshold"
+CONF_FOLLOWUP_THRESHOLD = "followup_threshold"
+CONF_FOLLOWUP_SECONDS = "followup_seconds"
+CONF_DECISION_LOG = "decision_log"
+
+# Classifier backends
+CLASSIFIER_CLEF = "clef"
+CLASSIFIER_JEV = "jev"
+CLASSIFIER_OPENAI = "openai"
+CLASSIFIER_NAME_ONLY = "name_only"
+CLASSIFIERS = [CLASSIFIER_CLEF, CLASSIFIER_JEV, CLASSIFIER_OPENAI, CLASSIFIER_NAME_ONLY]
+
+# TypeSafe Jev (hosted System One API). The model is pinned to a version, as TypeSafe
+# advises when thresholds are tuned: the jev-latest alias moves with each release.
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-1.14.0"
+
+# Defaults that differ by classifier (measured on the 2026-11-04 test set).
+CLASSIFIER_DEFAULTS = {
+    CLASSIFIER_JEV: {"address_threshold": 0.7},
+}
+
+DEFAULTS = {
+    CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
+    CONF_CLASSIFIER_URL: "",
+    CONF_CLASSIFIER_MODEL: "",
+    CONF_CLASSIFIER_API_KEY: "",
+    # Classifier probability that the speech is a request for the assistant.
+    CONF_ADDRESS_THRESHOLD: 0.8,
+    # Lower bar when the device's wake word model also heard the name.
+    CONF_WAKE_WORD_THRESHOLD: 0.6,
+    # Classifier probability that speech after a reply continues the conversation.
+    CONF_FOLLOWUP_THRESHOLD: 0.8,
+    # Speech this soon after a reply is checked as a possible follow-up (0 turns it off).
+    CONF_FOLLOWUP_SECONDS: 20,
+    # Write every decision, with its transcript, to LOG_FILE. Off by default: it records
+    # what people in the house say.
+    CONF_DECISION_LOG: False,
+}
+
+CLASSIFIER_TIMEOUT = 30
+
+# Entities from the Voice PE firmware package, matched on the end of their unique id
+# ("<mac>/0/<platform>/<entity name>"), so renamed entity ids keep working.
+DEVICE_SWITCH = "/switch/Smart Listening"
+DEVICE_RUN = "/binary_sensor/Smart Listening run"
+DEVICE_WAKE_WORD = "/text_sensor/Smart Listening wake word"
+DEVICE_THINKING = "/button/Smart Listening thinking"
+# With the device switch off, a run flag older than this is treated as stale.
+RUN_MAX_AGE = 30
+
+# Fuzzy match score that counts as the assistant's name being said.
+NAME_THRESHOLD = 0.75
+# The classifier is only asked when the name score reaches this (or in the follow-up window).
+NAME_ASK_THRESHOLD = 0.5
+# Without a classifier (or when it fails), answer only when the name is in the first words.
+NAME_ONLY_POSITION = 3
+# Speech this similar to the last reply is the speaker being overheard.
+ECHO_SIMILARITY = 0.6
+
+# Short commands after the name that a classifier scores low but should always be answered.
+SHORT_COMMANDS = (
+    "stop", "cancel", "pause", "resume", "goodnight", "good night", "never mind",
+    "nevermind", "quiet", "be quiet", "shut up", "louder", "quieter", "volume up",
+    "volume down", "turn it up", "turn it down", "thanks", "thank you",
+)
+
+LOG_FILE = "smart_listening/decisions.jsonl"
+LOG_MAX_BYTES = 20_000_000

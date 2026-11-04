@@ -1,0 +1,300 @@
+# Smart Listening firmware package for the Home Assistant Voice PE.
+# Include it after the stock Voice PE package:
+#
+#   packages:
+#     voice_pe: github://esphome/home-assistant-voice-pe/home-assistant-voice.yaml@26.9.0
+#     smart_listening: !include packages/smart-listening.yaml
+#
+# Copy this file to /config/esphome/packages/ (with the ESPHome Device Builder add-on).
+#
+# With the "Smart Listening" switch on, the device starts a request whenever it hears
+# speech (on-device VAD), with no wake word and no chime. The Smart Listening agent in
+# Home Assistant decides whether the speech was meant for the assistant; only then do
+# the thinking LEDs show and a reply play. Wake words still stop timers and
+# announcements, and give the agent a hint when the start of the speech was clipped.
+# With the switch off, the device behaves as stock (wake word, chime, LEDs).
+#
+# Automations written as a "then:" mapping replace the stock package's version; a list
+# would be appended to it instead (ESPHome merges lists).
+
+globals:
+  - id: listening_run
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+switch:
+  - platform: template
+    id: smart_listening
+    name: "Smart Listening"
+    icon: mdi:account-voice
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    # Switch on: a wake word only adds a name hint and the HA agent still decides, so the
+    # name models can be more sensitive (0.80). Switch off: the strict model defaults.
+    on_turn_on:
+      - script.execute: smart_listening_cutoffs
+    on_turn_off:
+      - script.execute: smart_listening_cutoffs
+
+script:
+  - id: smart_listening_cutoffs
+    then:
+      - lambda: |-
+          bool on = id(smart_listening).state;
+          // Stock models and their defaults. If you use other wake word models, list
+          // their ids here with the cutoff from each model's JSON (x 255, rounded down).
+          id(okay_nabu).set_probability_cutoff(on ? 204 : 216);    // 0.80 : 0.85
+          id(hey_jarvis).set_probability_cutoff(on ? 204 : 247);   // 0.80 : 0.97
+          id(hey_mycroft).set_probability_cutoff(on ? 204 : 242);  // 0.80 : 0.95
+          ESP_LOGD("smart_listening", "name model cutoffs %s", on ? "0.80 (on)" : "defaults (off)");
+
+interval:
+  # Re-apply after boot, once the switch state has been restored.
+  - interval: 60s
+    startup_delay: 10s
+    then:
+      - script.execute: smart_listening_cutoffs
+
+binary_sensor:
+  # Published by the firmware so HA can tell speech runs from wake word runs.
+  - platform: template
+    id: smart_listening_run
+    name: "Smart Listening run"
+    entity_category: diagnostic
+
+  # On-device VAD from micro_wake_word, polled every loop.
+  - platform: template
+    id: speech_detected
+    internal: true
+    lambda: return id(mww).get_vad_state();
+    on_press:
+      - if:
+          condition:
+            and:
+              - switch.is_on: smart_listening
+              - switch.is_off: master_mute_switch
+              - switch.is_off: timer_ringing
+              - lambda: return !id(init_in_progress);
+              - not: voice_assistant.is_running
+              - not:
+                  media_player.is_announcing:
+                    id: external_media_player
+          then:
+            - lambda: id(listening_run) = true;
+            - binary_sensor.template.publish:
+                id: smart_listening_run
+                state: true
+            - text_sensor.template.publish:
+                id: smart_listening_wake_word
+                state: ""
+            - voice_assistant.start:
+
+  # One press during a speech run ends it and starts a normal request.
+  # Runs alongside the stock single-click handler, which stops the running request.
+  - id: !extend center_button
+    on_multi_click:
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.25s
+        then:
+          - if:
+              condition:
+                lambda: return id(listening_run) && !id(init_in_progress) && !id(color_changed) && !id(group_volume_changed) && !id(disable_buttons).state && !id(timer_ringing).state && !id(master_mute_switch).state;
+              then:
+                - lambda: id(listening_run) = false;
+                - binary_sensor.template.publish:
+                    id: smart_listening_run
+                    state: false
+                - voice_assistant.stop:
+                - wait_until:
+                    condition:
+                      not: voice_assistant.is_running
+                    timeout: 2s
+                - script.execute:
+                    id: play_sound
+                    priority: true
+                    sound_file: "center_button_press_sound"
+                - delay: 300ms
+                - voice_assistant.start:
+
+button:
+  # Pressed by HA's Smart Listening agent when it accepts a speech run: show the thinking LEDs
+  # (speech runs leave the LEDs alone until then).
+  - platform: template
+    id: smart_listening_thinking
+    name: "Smart Listening thinking"
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            and:
+              - lambda: return id(listening_run);
+              - voice_assistant.is_running
+          then:
+            - lambda: id(voice_assistant_phase) = 4;
+            - script.execute: control_leds
+
+text_sensor:
+  # Wake word heard during the current speech run ("" when none). Cleared in on_end.
+  - platform: template
+    id: smart_listening_wake_word
+    name: "Smart Listening wake word"
+    entity_category: diagnostic
+
+micro_wake_word:
+  id: mww
+  # Smart Listening on: requests start on detected speech and HA decides, so wake
+  # words only do the stock "stop" jobs (ringing timer, announcement).
+  # Smart Listening off: stock wake word behaviour, unchanged.
+  on_wake_word_detected:
+    then:
+      - if:
+          condition:
+            switch.is_off: master_mute_switch
+          then:
+            - if:
+                condition:
+                  switch.is_on: timer_ringing
+                then:
+                  - switch.turn_off: timer_ringing
+                else:
+                  - if:
+                      condition:
+                        media_player.is_announcing:
+                          id: external_media_player
+                      then:
+                        - media_player.stop:
+                            announcement: true
+                            id: external_media_player
+                      else:
+                        - if:
+                            condition:
+                              switch.is_off: smart_listening
+                            then:
+                              - if:
+                                  condition:
+                                    voice_assistant.is_running:
+                                  then:
+                                    - voice_assistant.stop:
+                                  else:
+                                    - if:
+                                        condition:
+                                          switch.is_on: wake_sound
+                                        then:
+                                          - script.execute:
+                                              id: play_sound
+                                              priority: true
+                                              sound_file: "wake_word_triggered_sound"
+                                          - delay: 300ms
+                                    - voice_assistant.start:
+                                        wake_word: !lambda return wake_word;
+                            # Smart Listening on: the wake word is a silent hint. The speech
+                            # detector clips the start of what is said, so the name is often
+                            # missing from the transcript; HA adds it back from this sensor.
+                            else:
+                              - if:
+                                  condition:
+                                    or:
+                                      - lambda: return id(listening_run);
+                                      - and:
+                                          - not: voice_assistant.is_running
+                                          - lambda: return !id(init_in_progress);
+                                  then:
+                                    - text_sensor.template.publish:
+                                        id: smart_listening_wake_word
+                                        state: !lambda return wake_word;
+                                    - if:
+                                        condition:
+                                          not: voice_assistant.is_running
+                                        then:
+                                          - lambda: id(listening_run) = true;
+                                          - binary_sensor.template.publish:
+                                              id: smart_listening_run
+                                              state: true
+                                          - voice_assistant.start:
+
+voice_assistant:
+  # LED phases (stock substitutions): 1 idle, 2 waiting, 3 listening, 4 thinking, 11 error.
+  # Speech runs leave the LEDs alone.
+  on_listening:
+    then:
+      - if:
+          condition:
+            lambda: return !id(listening_run);
+          then:
+            - lambda: id(voice_assistant_phase) = 2;
+            - script.execute: control_leds
+  on_stt_vad_start:
+    then:
+      - if:
+          condition:
+            lambda: return !id(listening_run);
+          then:
+            - lambda: id(voice_assistant_phase) = 3;
+            - script.execute: control_leds
+  on_stt_vad_end:
+    then:
+      - if:
+          condition:
+            lambda: return !id(listening_run);
+          then:
+            - lambda: id(voice_assistant_phase) = 4;
+            - script.execute: control_leds
+  on_error:
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: return !id(init_in_progress);
+              - lambda: return !id(listening_run);
+              - lambda: return code != "duplicate_wake_up_detected";
+              - lambda: return code != "stt-no-text-recognized";
+          then:
+            - lambda: id(voice_assistant_phase) = 11;
+            - script.execute: control_leds
+      - if:
+          condition:
+            - lambda: return code == "cloud-auth-failed" && !id(listening_run);
+          then:
+            - script.execute:
+                id: play_sound
+                priority: true
+                sound_file: "error_cloud_expired"
+
+  on_intent_start:
+    - mixer_speaker.apply_ducking:
+        id: announcement_mixing_input
+        decibel_reduction: 255
+
+  # Stock on_end, with the speech run flag cleared once nothing is running.
+  on_end:
+    then:
+      - wait_until:
+          not:
+            voice_assistant.is_running:
+      # Cleared only now: if the next run started before this handler fired (back-to-back
+      # speech), the wait above lasts until that run ends too, so its flag stays on
+      # while HA judges it. Nothing can start between the wait ending and these lines.
+      - lambda: id(listening_run) = false;
+      - binary_sensor.template.publish:
+          id: smart_listening_run
+          state: false
+      - text_sensor.template.publish:
+          id: smart_listening_wake_word
+          state: ""
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 0
+          duration: 1.0s
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == 11;
+          then:
+            - delay: 1s
+      - lambda: id(voice_assistant_phase) = 1;
+      - script.execute: control_leds
+      - mixer_speaker.apply_ducking:
+          id: announcement_mixing_input
+          decibel_reduction: 0

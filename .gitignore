@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+.claude/
+CLAUDE.md
+
+# Local only: brief for the README writer, decision logs
+BRIEF.md
+*.jsonl

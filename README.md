@@ -1,0 +1,225 @@
+# Smart Listening for Home Assistant
+
+A Home Assistant custom integration and Voice PE firmware package that removes the wake word. You talk to your assistant the way you would talk to a person in the room ("Nova, what time is it?"), with no chime and no pause. The Voice PE sends the speech it hears to speech-to-text, and Smart Listening decides which of it was meant for the assistant. Only that speech reaches your conversation agent; the rest is dropped silently.
+
+Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Smart Announcements](https://github.com/mike-nott/smart-announcements).
+
+## Key Features
+
+- ✅ **No Wake Word, No Chime**: Say the assistant's name anywhere in a sentence, at normal speed
+- ✅ **Ghost Wake Protection**: TV, radio and conversations that mention the name are judged before anything answers
+- ✅ **Fuzzy Name Matching**: Transcription slips such as "Novva" still count as the name
+- ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said
+- ✅ **Natural Follow-ups**: For a short time after a reply you can carry on without the name; each follow-up is judged too
+- ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored
+- ✅ **Short Commands Always Work**: "Nova, stop", "Nova, louder" and similar are answered without a model call
+- ✅ **Honest LEDs**: The thinking ring lights only once a request has been accepted, so the device stays dark while it ignores the TV
+- ✅ **Choice of Classifier**: Clef (local), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
+- ✅ **Several Assistants**: One config entry per assistant, each with its own names and conversation agent
+- ✅ **Per-Device Off Switch**: Turn Smart Listening off on any Voice PE to get the stock wake word behaviour back
+- ✅ **Decision Log**: Optional log of every decision, with scores, for tuning
+
+## The Problem Smart Listening Solves
+
+Wake words are a compromise:
+- They trigger on things that only sound like the name (ghost wakes), often from the TV
+- You have to say them first, wait for the chime, then speak
+- A sensitive model wakes too often; a strict one misses you
+- They cannot tell "Nova, turn the lights off" from "I asked Nova to turn the lights off"
+
+Smart Listening hears the whole sentence before deciding, so it can tell the difference.
+
+## How Smart Listening Works
+
+1. **The Voice PE hears speech.** With the Smart Listening switch on, the device's voice activity detector starts a request whenever someone speaks. No wake word, no chime, no LEDs.
+2. **Home Assistant transcribes it** with your speech-to-text engine, as for any Assist request.
+3. **Smart Listening judges the transcript**, in this order:
+   - Did the device's wake word model trigger during this speech? Then the name was said, even if the transcript lost it.
+   - Is this the assistant's last reply, heard back? Ignore it.
+   - Is it the name followed by a short command ("stop", "cancel", "thank you")? Answer it.
+   - Does the transcript contain the name (fuzzy match)? If not, and it is outside the follow-up window, ignore it. No model is called.
+   - Ask the classifier "Is this a request for Nova?", and within the follow-up window "Does this continue what Nova just said?"
+   - Answer only if the classifier's score passes the threshold.
+4. **Accepted speech** turns on the thinking LEDs and goes to your conversation agent. The reply plays as normal.
+5. **Ignored speech** gets an empty reply: no sound, no LEDs, and no chat history.
+
+Requests that do not come from speech detection (the centre button, or a wake word on a device with Smart Listening switched off) pass straight through to your conversation agent without being judged.
+
+## Requirements
+
+- Home Assistant 2025.8 or newer
+- A Home Assistant Voice PE with its firmware built from YAML in the ESPHome Device Builder add-on (an adopted device)
+- A speech-to-text engine (local Whisper or Speech-to-Phrase, Home Assistant Cloud, etc.). Every unmuted device sends all the speech it hears, so a local engine needs headroom
+- A conversation agent to answer requests (MCP Assist, OpenAI, Ollama, the built-in Assist agent, etc.)
+- Optional: a classifier (see [Classifiers](#classifiers))
+
+## Installation
+
+### Add to HACS
+
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mike-nott&repository=smart-listening&category=integration)
+
+### Option A: HACS (Recommended)
+1. Click the badge above, or in HACS add `https://github.com/mike-nott/smart-listening` as a custom repository (type: Integration)
+2. Install "Smart Listening"
+3. Restart Home Assistant
+
+### Option B: Manual
+1. Copy `custom_components/smart_listening` into your Home Assistant `config/custom_components/` folder
+2. Restart Home Assistant
+
+## Setup
+
+### 1. Add a Smart Listening agent
+
+Go to **Settings → Devices & services → Add integration → Smart Listening** and choose:
+- **Conversation agent**: the agent that answers accepted requests
+- **Assistant names**: the names the assistant answers to, separated by commas, for example `Nova, Hey Nova`. The first is the main name
+- **Classifier**: how speech containing the name is judged
+
+This creates a conversation agent called **Smart Listening Nova**.
+
+### 2. Create an Assist pipeline
+
+Go to **Settings → Voice assistants → Add assistant**. Pick your speech-to-text and text-to-speech engines as usual, and set the **Conversation agent** to **Smart Listening Nova**.
+
+If you rename this pipeline later, re-select it on every Voice PE straight away: devices fall back to the preferred pipeline when the name they stored no longer exists.
+
+### 3. Add the firmware package
+
+1. Copy [`esphome/smart-listening.yaml`](esphome/smart-listening.yaml) to `/config/esphome/packages/smart-listening.yaml`
+2. In the Device Builder, edit each Voice PE and add the package **after** the stock package:
+
+   ```yaml
+   packages:
+     voice_pe: github://esphome/home-assistant-voice-pe/home-assistant-voice.yaml@26.9.0
+     smart_listening: !include packages/smart-listening.yaml
+   ```
+
+3. Install the firmware
+
+The package is written against stock firmware 26.9.0. It replaces some of the stock package's handlers, so check it again before moving to a newer stock version.
+
+### 4. Turn it on
+
+On each Voice PE's device page:
+- Set **Assistant** to the pipeline from step 2
+- If you have a wake word model for the assistant's name, choose it as the **Wake word**: it is used as a hint
+- Turn on the **Smart Listening** switch. It starts off after every firmware install
+
+## The Firmware Package
+
+The package adds four entities to each Voice PE:
+
+| Entity | Purpose |
+| --- | --- |
+| `switch` Smart Listening | On: requests start on speech. Off: stock wake word behaviour |
+| `binary_sensor` Smart Listening run | On while a request started by speech detection is running |
+| `text_sensor` Smart Listening wake word | The wake word heard during the current speech, if any |
+| `button` Smart Listening thinking | Pressed by the integration to show the thinking LEDs once it accepts a request |
+
+With the switch on:
+- Speech starts a request silently, without the chime or the listening LEDs
+- A wake word no longer starts a request of its own. It still stops a ringing timer or an announcement, and otherwise tells Smart Listening the name was said
+- The wake word models' cutoffs drop to 0.80, since a false trigger now costs nothing: the integration still decides. The package does this for the stock models (Okay Nabu, Hey Jarvis, Hey Mycroft); if you use your own models, edit the `smart_listening_cutoffs` script
+- A single press of the centre button during a speech run starts a normal request instead
+- Mute, timers and announcements work as stock
+
+## Configuration
+
+Open **Smart Listening → Configure** on the agent to change any setting. Changes apply straight away, without a restart.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Conversation agent | | The agent that answers accepted requests |
+| Assistant names | | Names the assistant answers to, comma separated |
+| Classifier | Clef | How speech containing the name is judged |
+| Request threshold | 0.8 (Jev 0.7) | How sure the classifier must be that speech containing the name is a request |
+| Request threshold when the wake word was heard | 0.6 | Used instead when the device's wake word model also heard the name |
+| Follow-up threshold | 0.8 | How sure the classifier must be that speech after a reply continues the conversation |
+| Follow-up window | 20 s | How long after a reply speech without the name is checked as a follow-up. 0 turns follow-ups off |
+| Decision log | Off | Writes every decision and its transcript to `config/smart_listening/decisions.jsonl` |
+
+### Classifiers
+
+The classifier is only asked about speech that contains the name (or something close to it), and about speech inside the follow-up window. Everything else is ignored without a model call.
+
+#### Clef (local)
+A self-hosted System One decision server on your network. Enter the full decision endpoint, for example `http://192.168.1.20:8080/v1/systemone`. Typically 70 to 100 ms per decision, and nothing leaves your network. The default thresholds were measured on Clef.
+
+#### Jev (TypeSafe, cloud)
+TypeSafe's hosted System One model, for when you do not run a decision server yourself. You need an API key from TypeSafe. The model is pinned to `jev-1.14.0`, because `jev-latest` changes with each release and thresholds are tuned to one version. Around 150 to 180 ms per decision. Pricing is per input token (output is free), which comes to pennies a month for a household.
+
+Transcripts that contain the name, and speech inside the follow-up window, are sent to TypeSafe. If Jev cannot be reached, Smart Listening falls back to the name-only rule below.
+
+#### OpenAI-compatible endpoint
+Any chat completions API: Ollama, vLLM, LM Studio, or a cloud provider. Enter the base URL (for example `http://192.168.1.20:11434/v1`), the model name and, if needed, an API key. The model is asked for a JSON answer with a confidence score. This is slower than a dedicated decision model and its scores are less well calibrated, so expect to tune the thresholds.
+
+#### Name only
+No model. Speech is answered when the name is among its first three words. There are no follow-ups. This is the simplest option, and it still ignores everything that does not start with the name.
+
+### How the classifiers compare
+
+Measured on 66 real transcripts from one home: 38 requests to the assistant, and 28 lines of side talk that mention the assistant by name ("did you ask Nova to set the timer?"). Speech without the name never reaches the classifier, so it is not in this set.
+
+| Classifier | Threshold | Requests answered | Side talk answered |
+| --- | --- | --- | --- |
+| Jev `jev-1.14.0` | 0.7 | 37 of 38 | 1 of 28 |
+| Jev `jev-1.14.0` | 0.6 | 38 of 38 | 2 of 28 |
+| Clef | 0.8 | 34 of 38 | 1 of 28 |
+
+On follow-ups, Jev accepted all 7 genuine follow-ups and none of the 5 unrelated lines, at any threshold from 0.5 to 0.8.
+
+### Tuning the thresholds
+
+- **It answers things it should not**: raise the request threshold, or the wake word threshold if the decision log shows a `wake_hint` on those lines
+- **It misses requests**: lower the request threshold a little, and check the transcripts: a request that never contains the name cannot be answered
+- **Follow-ups are missed or picked up wrongly**: adjust the follow-up threshold, or shorten the window
+
+Turn on the decision log while tuning. Each line holds the transcript, the name match, the classifier's scores and the decision.
+
+## Privacy
+
+Smart Listening changes what your Voice PEs send off the device:
+- **Every unmuted Voice PE transcribes all the speech it hears**, not just requests. Transcripts come from your speech-to-text engine: use a local one if that matters to you, and mute devices in rooms where you do not want this
+- **Transcripts that contain the name**, and speech shortly after a reply, go to the classifier. With Clef or a local model they stay on your network; with Jev or a cloud endpoint they do not
+- **Ignored speech is not stored** in Home Assistant: no reply and no chat history
+- **The decision log stores transcripts** of everything judged. It is off by default; delete `config/smart_listening/decisions.jsonl` when you have finished tuning
+
+## Troubleshooting
+
+### Nothing answers
+- Is the **Smart Listening** switch on? It turns off after every firmware install
+- Is the device's **Assistant** set to the pipeline that uses the Smart Listening agent? If the pipeline was renamed, re-select it
+- Turn on the decision log and speak. No new line means the request never reached Smart Listening (check the pipeline); a line with `"answer": false` shows how it was judged
+
+### The name is missing from transcripts
+Speech detection can clip the first word, so "Nova, what time is it?" arrives as "what time is it?". Use a wake word model for the name: it then supplies the name as a hint. If your speech-to-text engine misspells the name in the same way each time, add the misspelling as an extra name.
+
+### It answers the TV
+Read the decision log for those lines. If the classifier scored them above the request threshold, raise it. If they have a `wake_hint`, raise the wake word threshold.
+
+### Button requests are being judged
+They should not be: button requests pass straight through. If they are judged, the device's run flag is stuck. Reboot the device, and please open an issue with the decision log lines.
+
+### Turning it off
+Switch **Smart Listening** off on a device for the stock wake word behaviour. To remove it entirely, remove the package from the device YAML, reinstall the firmware, and set the device's assistant back to your usual pipeline.
+
+## Development
+
+Tests use Home Assistant's own helpers:
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install homeassistant hassil gazetteer-matcher pytest pytest-asyncio
+pytest tests
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/mike-nott/smart-listening/issues)
+- **Home Assistant Community**: [Community Forum](https://community.home-assistant.io/)
