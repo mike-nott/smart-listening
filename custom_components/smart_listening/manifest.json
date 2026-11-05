@@ -9,7 +9,8 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "conversation"
+    "conversation",
+    "intent"
   ],
   "documentation": "https://github.com/mike-nott/smart-listening",
   "integration_type": "service",
