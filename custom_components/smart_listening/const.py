@@ -120,6 +120,11 @@ NAME_ONLY_POSITION = 3
 ECHO_SIMILARITY = 0.6
 # Only speech this soon after the reply can be its echo (replies on a speaker can be long).
 ECHO_WINDOW = 60
+# Open-mic follow-ups: when the agent asks to keep listening, Home Assistant reopens the
+# microphone as soon as the reply ends. That run is judged as a follow-up if it starts
+# within OPEN_MIC_GAP seconds of the reply ending, and within OPEN_MIC_WINDOW of the request.
+OPEN_MIC_GAP = 4
+OPEN_MIC_WINDOW = 180
 
 # Short commands after the name that a classifier scores low but should always be answered.
 SHORT_COMMANDS = (

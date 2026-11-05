@@ -17,7 +17,6 @@ log, and shown under Settings > Repairs until the agent answers again.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import difflib
 import json
 import logging
@@ -77,6 +76,8 @@ from .const import (
     DOMAIN,
     ECHO_SIMILARITY,
     ECHO_WINDOW,
+    OPEN_MIC_GAP,
+    OPEN_MIC_WINDOW,
     LOG_FILE,
     LOG_MAX_BYTES,
     NAME_ASK_THRESHOLD,
@@ -253,6 +254,12 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._last_reply: dict[str, tuple[float, str]] = {}
         # assist_satellite entity_id -> when it last started listening (start of a run)
         self._run_started: dict[str, Any] = {}
+        # assist_satellite entity_id -> when it last stopped "responding" (a reply ended),
+        # and whether its latest run started straight after that (HA's open microphone).
+        self._reply_ended: dict[str, Any] = {}
+        self._run_after_reply: dict[str, bool] = {}
+        # device_id -> when the agent last asked to keep listening (monotonic)
+        self._invited: dict[str, float] = {}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -269,9 +276,33 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
         @callback
         def _record(event: Event) -> None:
-            self._run_started[event.data["entity_id"]] = event.data["new_state"].last_changed
+            entity, new = event.data["entity_id"], event.data["new_state"]
+            old = event.data.get("old_state")
+            self._run_started[entity] = new.last_changed
+            ended = self._reply_ended.get(entity)
+            self._run_after_reply[entity] = (old is not None and old.state == "responding") or (
+                ended is not None and (new.last_changed - ended).total_seconds() <= OPEN_MIC_GAP
+            )
+
+        @callback
+        def _left_responding(event_data) -> bool:
+            old, new = event_data.get("old_state"), event_data.get("new_state")
+            return (
+                event_data["entity_id"].startswith("assist_satellite.")
+                and old is not None
+                and old.state == "responding"
+                and new is not None
+                and new.state != "responding"
+            )
+
+        @callback
+        def _record_reply_end(event: Event) -> None:
+            self._reply_ended[event.data["entity_id"]] = event.data["new_state"].last_changed
 
         self.async_on_remove(self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record, event_filter=_is_listening))
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record_reply_end, event_filter=_left_responding)
+        )
 
         # Agents (MCP Assist and others) can load late, so check the target a little
         # after Home Assistant has started rather than at setup.
@@ -438,8 +469,24 @@ class SmartListeningAgent(conversation.ConversationEntity):
             self._last_reply[user_input.device_id] = (time.monotonic(), _speech(result))
         return result, info
 
+    def _is_open_mic_followup(self, device_id: str | None) -> bool:
+        """True if this run is Home Assistant's open microphone after a reply that asked to
+        keep listening (not a button press). The invitation is used up either way."""
+        invited = self._invited.pop(device_id or "", None)
+        if invited is None or time.monotonic() - invited > OPEN_MIC_WINDOW:
+            return False
+        return bool(self._run_after_reply.get(self._satellite(device_id) or ""))
+
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         if not self._is_speech_run(user_input.device_id):
+            if self._is_open_mic_followup(user_input.device_id):
+                # Judged like speech, with the follow-up check always asked.
+                rec = await self._assess(user_input, invited=True)
+                rec["kind"] = "open_mic"
+                if not rec["answer"]:
+                    self._log(rec)
+                    return _silent(user_input)
+                return await self._answer(user_input, rec)
             rec = {"kind": "passthrough", "device_id": user_input.device_id, "text": user_input.text}
             result, timer = await self._try_timer(user_input, user_input.text)
             if timer:
@@ -450,6 +497,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
                 result, info = await self._forward(user_input)
                 rec.update(info)
             rec["reply"] = _speech(result)[:300]
+            self._note_invitation(user_input, result, rec)
             self._log(rec)
             return result
 
@@ -457,7 +505,19 @@ class SmartListeningAgent(conversation.ConversationEntity):
         if not rec["answer"]:
             self._log(rec)
             return _silent(user_input)
+        return await self._answer(user_input, rec)
 
+    def _note_invitation(
+        self, user_input: conversation.ConversationInput, result: conversation.ConversationResult, rec: dict[str, Any]
+    ) -> None:
+        """The agent asked to keep listening: let HA reopen the microphone, and judge that run."""
+        if result.continue_conversation and user_input.device_id:
+            self._invited[user_input.device_id] = time.monotonic()
+            rec["continue"] = True
+
+    async def _answer(
+        self, user_input: conversation.ConversationInput, rec: dict[str, Any]
+    ) -> conversation.ConversationResult:
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
         result, timer = await self._try_timer(user_input, rec["text"])
@@ -471,11 +531,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         rec.update(info)
         rec["reply"] = _speech(result)[:300]
         rec["agent_ms"] = round((time.monotonic() - start) * 1000)
-        if result.continue_conversation:
-            # No open-microphone follow-up from HA: that would be a normal listening run,
-            # which is passed through unjudged. Follow-ups are judged here instead.
-            rec["continue_suppressed"] = True
-            result = dataclasses.replace(result, continue_conversation=False)
+        self._note_invitation(user_input, result, rec)
         self._log(rec)
         return result
 
@@ -626,7 +682,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
             )
             self._classifier_issue = True
 
-    async def _assess(self, user_input: conversation.ConversationInput) -> dict[str, Any]:
+    async def _assess(self, user_input: conversation.ConversationInput, invited: bool = False) -> dict[str, Any]:
         text = user_input.text.strip()
         score, name, pos, rest = _name_match(text, self._names)
         hint = self._wake_hint(user_input.device_id)
@@ -649,7 +705,9 @@ class SmartListeningAgent(conversation.ConversationEntity):
         in_followup = False
         if prev is not None:
             rec["since_reply"] = round(time.monotonic() - prev[0], 1)
-            in_followup = bool(prev[1]) and rec["since_reply"] <= self._followup_seconds
+            # An open-mic run after a reply that asked to keep listening is always a
+            # possible follow-up, however long the reply took to play.
+            in_followup = bool(prev[1]) and (invited or rec["since_reply"] <= self._followup_seconds)
             # An echo is the reply heard back soon after it was spoken. Speech that starts
             # with the name, or that the wake word model heard the name in, is a person
             # talking to the assistant ("Lorelai, set a timer for 10 seconds" after
