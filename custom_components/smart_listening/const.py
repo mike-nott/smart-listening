@@ -118,6 +118,8 @@ NAME_ASK_THRESHOLD = 0.5
 NAME_ONLY_POSITION = 3
 # Speech this similar to the last reply is the speaker being overheard.
 ECHO_SIMILARITY = 0.6
+# Only speech this soon after the reply can be its echo (replies on a speaker can be long).
+ECHO_WINDOW = 60
 
 # Short commands after the name that a classifier scores low but should always be answered.
 SHORT_COMMANDS = (

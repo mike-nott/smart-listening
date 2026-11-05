@@ -76,6 +76,7 @@ from .const import (
     DEVICE_WAKE_WORD,
     DOMAIN,
     ECHO_SIMILARITY,
+    ECHO_WINDOW,
     LOG_FILE,
     LOG_MAX_BYTES,
     NAME_ASK_THRESHOLD,
@@ -649,7 +650,17 @@ class SmartListeningAgent(conversation.ConversationEntity):
         if prev is not None:
             rec["since_reply"] = round(time.monotonic() - prev[0], 1)
             in_followup = bool(prev[1]) and rec["since_reply"] <= self._followup_seconds
-            if prev[1] and difflib.SequenceMatcher(None, text.lower(), prev[1].lower()).ratio() >= ECHO_SIMILARITY:
+            # An echo is the reply heard back soon after it was spoken. Speech that starts
+            # with the name, or that the wake word model heard the name in, is a person
+            # talking to the assistant ("Lorelai, set a timer for 10 seconds" after
+            # "Timer set for 10 seconds."), not the reply.
+            addressed = hint is not None or (score >= NAME_THRESHOLD and pos == 0)
+            if (
+                prev[1]
+                and not addressed
+                and rec["since_reply"] <= ECHO_WINDOW
+                and difflib.SequenceMatcher(None, text.lower(), prev[1].lower()).ratio() >= ECHO_SIMILARITY
+            ):
                 return {**rec, "answer": False, "reason": "echo of last reply"}
 
         named = score >= NAME_THRESHOLD

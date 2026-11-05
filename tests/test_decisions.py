@@ -647,3 +647,22 @@ async def test_failure_straight_after_startup_raises_issue(monkeypatch):
     h = Harness(monkeypatch, {"conversation.main": "missing"}, backup="")
     await h.ask()
     assert "agent_unavailable_e1" in h.issues
+
+
+@pytest.mark.asyncio
+async def test_repeating_a_timer_request_is_not_an_echo():
+    # Live 2026-11-05 15:03: rejected as an echo of "Timer set for 10 seconds."
+    agent = make_agent(FakeClassifier(address=0.99, followup=0.1), hint="Lorelai", last_reply=(260, "Timer set for 10 seconds."))
+    agent._names = ("Lorelai", "Alexa")
+    r = await decide(agent, "Set a timer for 10 seconds.")
+    assert r.get("reason") != "echo of last reply"
+    r = await decide(make_agent(FakeClassifier(address=0.99, followup=0.1), last_reply=(5, "Timer set for 10 seconds.")),
+                     "Nova, set a timer for 10 seconds.")
+    assert r.get("reason") != "echo of last reply" and r["answer"]
+
+
+@pytest.mark.asyncio
+async def test_old_reply_is_not_an_echo():
+    reply = "It's ten fifty-seven in the morning. You've got the whole day ahead of you."
+    r = await decide(make_agent(FakeClassifier(address=0.1, followup=0.1), last_reply=(90, reply)), reply)
+    assert r.get("reason") != "echo of last reply"
