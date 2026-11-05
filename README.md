@@ -10,7 +10,8 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Ghost Wake Protection**: TV, radio and conversations that mention the name are judged before anything answers
 - ✅ **Fuzzy Name Matching**: Transcription slips such as "Novva" still count as the name
 - ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said
-- ✅ **Natural Follow-ups**: For a short time after a reply you can carry on without the name; each follow-up is judged too
+- ✅ **Natural Follow-ups**: The Voice PE listens again straight after each answer, so you can carry on without the name; each follow-up is judged too
+- ✅ **Classic Wake Word Too**: Say just "Nova" and pause: it answers "How can I help?" and listens
 - ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored
 - ✅ **Short Commands Always Work**: "Nova, stop", "Nova, louder" and similar are answered without a model call
 - ✅ **Honest LEDs**: The thinking ring lights only once a request has been accepted, so the device stays dark while it ignores the TV
@@ -147,6 +148,7 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 | Request threshold | Clef 0.5, Jev 0.7, others 0.8 | How sure the classifier must be that speech containing the name is a request |
 | Request threshold when the wake word was heard | 0.6 | Used instead when the device's wake word model also heard the name |
 | Follow-up threshold | 0.8 | How sure the classifier must be that speech after a reply continues the conversation |
+| Keep listening after every answer | On | The Voice PE listens again straight after each answer; what it hears is judged as a follow-up. Off: only when the agent asks a question |
 | Follow-up window | 20 s | How long after a reply speech without the name is checked as a follow-up. 0 turns follow-ups off |
 | Decision log | Off | Writes every decision and its transcript to `config/smart_listening/decisions.jsonl` |
 

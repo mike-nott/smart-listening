@@ -14,6 +14,9 @@ CONF_AGENT_TIMEOUT = "agent_timeout"
 # score a timer action needs.
 CONF_TIMERS = "handle_timers"
 CONF_TIMER_THRESHOLD = "timer_threshold"
+# Keep the microphone open after every answer (judged as a possible follow-up), not only
+# when the agent asks to.
+CONF_KEEP_LISTENING = "keep_listening"
 CONF_NAMES = "assistant_names"
 CONF_CLASSIFIER = "classifier"
 CONF_CLASSIFIER_URL = "classifier_url"
@@ -71,6 +74,7 @@ DEFAULTS = {
     CONF_BACKUP_AGENT: "",
     CONF_AGENT_TIMEOUT: 60,
     CONF_TIMERS: True,
+    CONF_KEEP_LISTENING: True,
     # Measured on Clef: no wrong timer actions at 0.6 (2026-11-05, 60 requests).
     CONF_TIMER_THRESHOLD: 0.6,
     CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
@@ -95,6 +99,8 @@ CLASSIFIER_TIMEOUT = 30
 
 # Spoken when neither the target agent nor the backup could answer an accepted request.
 UNAVAILABLE_MESSAGE = "Sorry, {name} isn't available right now."
+# Spoken when only the assistant's name is said ("Lorelai..."), before listening.
+SUMMONED_MESSAGE = "How can I help?"
 # Consecutive failures before a repair issue appears (a missing agent raises one at once).
 AGENT_ISSUE_AFTER = 3
 CLASSIFIER_ISSUE_AFTER = 3

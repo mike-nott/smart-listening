@@ -105,6 +105,7 @@ async def test_button_press_after_a_question_is_passed_through(monkeypatch):
 @pytest.mark.asyncio
 async def test_no_invitation_means_passthrough(monkeypatch):
     room = Room(monkeypatch, ask_back=False)
+    room.agent._keep_listening = False
     await room.say("Nova, what time is it?")
     assert "dev" not in room.agent._invited
     room.speech_run = False
@@ -117,8 +118,41 @@ async def test_no_invitation_means_passthrough(monkeypatch):
 async def test_old_invitation_expires(monkeypatch):
     room = Room(monkeypatch)
     await room.say("Nova, what time is it?")
-    room.agent._invited["dev"] -= slc.OPEN_MIC_WINDOW + 1
+    when, why = room.agent._invited["dev"]
+    room.agent._invited["dev"] = (when - slc.OPEN_MIC_WINDOW - 1, why)
     room.speech_run = False
     room.agent._run_after_reply[SAT] = True
     result, rec = await room.say("hello")
     assert rec["kind"] == "passthrough"
+
+
+@pytest.mark.asyncio
+async def test_keep_listening_after_every_answer(monkeypatch):
+    room = Room(monkeypatch, ask_back=False)       # the agent did not ask anything
+    result, rec = await room.say("Nova, what time is it?")
+    assert result.continue_conversation is True and rec["continue"] is True
+    assert room.agent._invited["dev"][1] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_name_alone_asks_how_can_i_help_and_listens(monkeypatch):
+    room = Room(monkeypatch, address=0.05)         # the classifier is not asked
+    result, rec = await room.say("Nova.")
+    assert result.response.speech["plain"]["speech"] == "How can I help?"
+    assert result.continue_conversation is True and rec["reason"] == "name only"
+    assert room.forwarded == [] and room.agent._invited["dev"][1] == "summoned"
+    for text in ("Hey Nova", "Nova?"):
+        room.agent._invited.clear()
+        _, rec = await room.say(text)
+        assert rec["reason"] == "name only", text
+
+
+@pytest.mark.asyncio
+async def test_request_after_the_name_is_answered_without_judging(monkeypatch):
+    room = Room(monkeypatch, followup=0.0, address=0.0)
+    await room.say("Nova.")
+    room.speech_run = False
+    room.agent._run_after_reply[SAT] = True
+    result, rec = await room.say("turn the kitchen lights off")
+    assert rec["kind"] == "open_mic" and rec["reason"] == "after the name"
+    assert room.forwarded == ["turn the kitchen lights off"]

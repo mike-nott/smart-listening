@@ -17,6 +17,7 @@ log, and shown under Settings > Repairs until the agent answers again.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import difflib
 import json
 import logging
@@ -63,6 +64,7 @@ from .const import (
     CONF_DECISION_LOG,
     CONF_FOLLOWUP_SECONDS,
     CONF_FOLLOWUP_THRESHOLD,
+    CONF_KEEP_LISTENING,
     CONF_NAMES,
     CONF_TARGET_AGENT,
     CONF_TIMER_THRESHOLD,
@@ -86,6 +88,7 @@ from .const import (
     RUN_MAX_AGE,
     SHORT_COMMANDS,
     STARTUP_CHECK_DELAY,
+    SUMMONED_MESSAGE,
     UNAVAILABLE_MESSAGE,
 )
 
@@ -210,6 +213,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._backup_agent: str = opts.get(CONF_BACKUP_AGENT) or ""
         self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
         self._handle_timers = bool(opts[CONF_TIMERS])
+        self._keep_listening = bool(opts[CONF_KEEP_LISTENING])
         self._timer_threshold = float(opts[CONF_TIMER_THRESHOLD])
         self._entry_id = entry.entry_id
         self._title = entry.title
@@ -258,8 +262,9 @@ class SmartListeningAgent(conversation.ConversationEntity):
         # and whether its latest run started straight after that (HA's open microphone).
         self._reply_ended: dict[str, Any] = {}
         self._run_after_reply: dict[str, bool] = {}
-        # device_id -> when the agent last asked to keep listening (monotonic)
-        self._invited: dict[str, float] = {}
+        # device_id -> (when the microphone was kept open (monotonic), why: "reply" or
+        # "summoned", the name said on its own)
+        self._invited: dict[str, tuple[float, str]] = {}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -469,17 +474,29 @@ class SmartListeningAgent(conversation.ConversationEntity):
             self._last_reply[user_input.device_id] = (time.monotonic(), _speech(result))
         return result, info
 
-    def _is_open_mic_followup(self, device_id: str | None) -> bool:
-        """True if this run is Home Assistant's open microphone after a reply that asked to
-        keep listening (not a button press). The invitation is used up either way."""
+    def _open_mic(self, device_id: str | None) -> str | None:
+        """Why this run is Home Assistant's open microphone after our reply ("reply" or
+        "summoned"), or None (a button press, or nothing kept open). Used up either way."""
         invited = self._invited.pop(device_id or "", None)
-        if invited is None or time.monotonic() - invited > OPEN_MIC_WINDOW:
-            return False
-        return bool(self._run_after_reply.get(self._satellite(device_id) or ""))
+        if invited is None or time.monotonic() - invited[0] > OPEN_MIC_WINDOW:
+            return None
+        if not self._run_after_reply.get(self._satellite(device_id) or ""):
+            return None
+        return invited[1]
 
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         if not self._is_speech_run(user_input.device_id):
-            if self._is_open_mic_followup(user_input.device_id):
+            why = self._open_mic(user_input.device_id)
+            if why == "summoned":
+                # The name was said on its own and we asked "How can I help?": this is the request.
+                text = user_input.text.strip()
+                rec = {"kind": "open_mic", "device_id": user_input.device_id, "text": text,
+                       "answer": bool(text), "reason": "after the name"}
+                if not text:
+                    self._log(rec)
+                    return _silent(user_input)
+                return await self._answer(user_input, rec)
+            if why == "reply":
                 # Judged like speech, with the follow-up check always asked.
                 rec = await self._assess(user_input, invited=True)
                 rec["kind"] = "open_mic"
@@ -497,7 +514,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
                 result, info = await self._forward(user_input)
                 rec.update(info)
             rec["reply"] = _speech(result)[:300]
-            self._note_invitation(user_input, result, rec)
+            result = self._note_invitation(user_input, result, rec)
             self._log(rec)
             return result
 
@@ -509,15 +526,31 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
     def _note_invitation(
         self, user_input: conversation.ConversationInput, result: conversation.ConversationResult, rec: dict[str, Any]
-    ) -> None:
-        """The agent asked to keep listening: let HA reopen the microphone, and judge that run."""
-        if result.continue_conversation and user_input.device_id:
-            self._invited[user_input.device_id] = time.monotonic()
+    ) -> conversation.ConversationResult:
+        """Keep the microphone open after an answer (always, or when the agent asks), and
+        judge the run Home Assistant opens next as a possible follow-up."""
+        if not user_input.device_id or not _speech(result):
+            return result
+        if self._keep_listening and not result.continue_conversation:
+            result = dataclasses.replace(result, continue_conversation=True)
+        if result.continue_conversation:
+            self._invited[user_input.device_id] = (time.monotonic(), "reply")
             rec["continue"] = True
+        return result
 
     async def _answer(
         self, user_input: conversation.ConversationInput, rec: dict[str, Any]
     ) -> conversation.ConversationResult:
+        if rec.get("reason") == "name only":
+            # "Lorelai..." on its own: ask what they want and keep listening, like a wake word.
+            result = _spoken(user_input, SUMMONED_MESSAGE)
+            result = dataclasses.replace(result, continue_conversation=True)
+            if user_input.device_id:
+                self._invited[user_input.device_id] = (time.monotonic(), "summoned")
+                self._last_reply[user_input.device_id] = (time.monotonic(), SUMMONED_MESSAGE)
+            self._log({**rec, "reply": SUMMONED_MESSAGE, "continue": True})
+            return result
+
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
         result, timer = await self._try_timer(user_input, rec["text"])
@@ -531,7 +564,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         rec.update(info)
         rec["reply"] = _speech(result)[:300]
         rec["agent_ms"] = round((time.monotonic() - start) * 1000)
-        self._note_invitation(user_input, result, rec)
+        result = self._note_invitation(user_input, result, rec)
         self._log(rec)
         return result
 
@@ -722,6 +755,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
                 return {**rec, "answer": False, "reason": "echo of last reply"}
 
         named = score >= NAME_THRESHOLD
+        if named and not rest.strip(" .,!?"):
+            return {**rec, "answer": True, "reason": "name only"}
         if named and rest.strip(" .,!?") in SHORT_COMMANDS:
             return {**rec, "answer": True, "reason": "short command"}
 

@@ -465,6 +465,7 @@ class Harness:
         self.agent._is_speech_run = lambda device_id: speech_run
         self.agent._show_thinking = lambda device_id: None
         self.agent._wake_hint = lambda device_id: None
+        self.agent._satellite = lambda device_id: None  # no device registry here
 
         def get_agent(hass, agent_id):
             return None if self.agents.get(agent_id) == "missing" else object()
