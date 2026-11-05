@@ -149,6 +149,7 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 | Request threshold when the wake word was heard | 0.6 | Used instead when the device's wake word model also heard the name |
 | Follow-up threshold | 0.8 | How sure the classifier must be that speech after a reply continues the conversation |
 | Keep listening after every answer | On | The Voice PE listens again straight after each answer; what it hears is judged as a follow-up. Off: only when the agent asks a question |
+| Name pause | 0 ms (off) | When the name is said on its own, the Voice PE greets after this much silence instead of waiting for Home Assistant's end-of-speech detection. Needs the Smart Listening firmware package with the "Name pause" number; sent to every Voice PE that uses this assistant |
 | Follow-up window | 20 s | How long after a reply speech without the name is checked as a follow-up. 0 turns follow-ups off |
 | Decision log | Off | Writes every decision and its transcript to `config/smart_listening/decisions.jsonl` |
 

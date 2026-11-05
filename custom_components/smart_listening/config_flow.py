@@ -37,6 +37,7 @@ from .const import (
     CONF_CLEF_FIELD,
     CONF_DECISION_LOG,
     CONF_FOLLOWUP_SECONDS,
+    CONF_NAME_PAUSE,
     CONF_FOLLOWUP_THRESHOLD,
     CONF_KEEP_LISTENING,
     CONF_REPLY_SCRIPT,
@@ -68,6 +69,11 @@ _PROBABILITY = selector.NumberSelector(
 _SECONDS = selector.NumberSelector(
     selector.NumberSelectorConfig(
         min=0, max=120, step=1, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX
+    )
+)
+_PAUSE = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=0, max=2000, step=50, unit_of_measurement="ms", mode=selector.NumberSelectorMode.BOX
     )
 )
 _TIMEOUT = selector.NumberSelector(
@@ -277,6 +283,7 @@ class SmartListeningOptionsFlow(OptionsFlow):
                         vol.Required(CONF_FOLLOWUP_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_FOLLOWUP_SECONDS): _SECONDS,
                         vol.Required(CONF_KEEP_LISTENING): _BOOL,
+                        vol.Required(CONF_NAME_PAUSE): _PAUSE,
                         vol.Optional(CONF_REPLY_SCRIPT): _SCRIPT,
                         vol.Required(CONF_TIMERS): _BOOL,
                         vol.Required(CONF_TIMER_THRESHOLD): _PROBABILITY,

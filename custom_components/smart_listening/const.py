@@ -17,6 +17,7 @@ CONF_TIMER_THRESHOLD = "timer_threshold"
 # Keep the microphone open after every answer (judged as a possible follow-up), not only
 # when the agent asks to.
 CONF_KEEP_LISTENING = "keep_listening"
+CONF_NAME_PAUSE = "name_pause"
 # Script that plays replies on the room's speaker, called with "url" and "satellite" (the
 # Voice PE's ESPHome name). Used for the greeting when only the name was heard, so it comes
 # from the same speaker as every other reply. Empty: the greeting plays on the Voice PE.
@@ -79,6 +80,9 @@ DEFAULTS = {
     CONF_AGENT_TIMEOUT: 60,
     CONF_TIMERS: True,
     CONF_KEEP_LISTENING: True,
+    # Silence (ms) after the name said on its own before the Voice PE greets, sent to each
+    # Voice PE's "Name pause" number. 0 = off: Home Assistant's end-of-speech detection decides.
+    CONF_NAME_PAUSE: 0,
     CONF_REPLY_SCRIPT: "",
     # Measured on Clef: no wrong timer actions at 0.6 (2026-11-05, 60 requests).
     CONF_TIMER_THRESHOLD: 0.6,
@@ -120,6 +124,7 @@ DEVICE_WAKE_WORD = "/text_sensor/Smart Listening wake word"
 DEVICE_THINKING = "/button/Smart Listening thinking"
 # Optional firmware switch: off means the Voice PE plays replies itself (speaker on its jack).
 DEVICE_REPLIES = "/switch/Replies on room speaker"
+DEVICE_NAME_PAUSE = "/number/Name pause"
 # With the device switch off, a run flag older than this is treated as stale.
 RUN_MAX_AGE = 30
 
@@ -131,6 +136,8 @@ NAME_ASK_THRESHOLD = 0.5
 NAME_ONLY_POSITION = 3
 # Speech this similar to the last reply is the speaker being overheard.
 ECHO_SIMILARITY = 0.6
+# The greeting heard back at the start of the request after it ("Hi, how can I help?").
+GREETING_ECHO_SIMILARITY = 0.75
 # Only speech this soon after the reply can be its echo (replies on a speaker can be long).
 ECHO_WINDOW = 60
 # Open-mic follow-ups: when the agent asks to keep listening, Home Assistant reopens the

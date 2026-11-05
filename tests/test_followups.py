@@ -179,6 +179,42 @@ async def test_request_after_the_name_is_answered_without_judging(monkeypatch):
     assert room.forwarded == ["turn the kitchen lights off"]
 
 
+
+def _summoned_room(monkeypatch):
+    room = Room(monkeypatch, followup=0.0, address=0.0)
+    room.agent._invited["dev"] = (slc.time.monotonic(), "summoned")
+    room.speech_run = False
+    room.agent._run_after_reply[SAT] = True
+    return room
+
+
+@pytest.mark.asyncio
+async def test_greeting_heard_back_is_taken_off_the_request(monkeypatch):
+    room = _summoned_room(monkeypatch)
+    result, rec = await room.say("Hi, how can I help? Hi, how can I help? What time is it?")
+    assert rec["reason"] == "after the name" and rec["request"] == "What time is it?"
+    assert room.forwarded == ["What time is it?"]
+
+
+@pytest.mark.asyncio
+async def test_greeting_heard_back_alone_is_ignored(monkeypatch):
+    room = _summoned_room(monkeypatch)
+    result, rec = await room.say("Hi, how can I help? Hi, how can I help?")
+    assert rec["answer"] is False and rec["reason"] == "greeting echo only"
+    assert room.forwarded == []
+    assert result.response.speech["plain"]["speech"] == ""
+
+
+@pytest.mark.parametrize("heard, rest", [
+    ("Hi, how can I help?", ""),
+    ("Hi how can I help you?", ""),
+    ("How can I help? Turn the lights off.", "Turn the lights off."),
+    ("Turn the lights off.", "Turn the lights off."),
+    ("Hi, what's the weather?", "Hi, what's the weather?"),
+])
+def test_strip_echo(heard, rest):
+    assert slc._strip_echo(heard, "Hi, how can I help?")[0] == rest
+
 class _Services:
     def __init__(self):
         self.calls = []
@@ -227,3 +263,35 @@ async def test_greeting_plays_on_the_voice_pe_when_replies_do(monkeypatch, switc
     await a._greet("dev", SAT)
     assert services.calls == [("assist_satellite", "start_conversation",
                                {"entity_id": SAT, "start_message": "Hi, how can I help?", "preannounce": False})]
+
+
+def _pause_agent(monkeypatch, value, states, uses_me=True):
+    room = Room(monkeypatch)
+    a = room.agent
+    services = _Services()
+    tasks = []
+    a.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: states.get(e)), services=services,
+                             async_create_task=lambda coro: tasks.append(coro))
+    a._name_pause = value
+    ents = {e: SimpleNamespace(entity_id=e, platform="esphome", device_id="dev",
+                               unique_id="20:F8:3B:09:06:5B/0/number/Name pause") for e in states}
+    monkeypatch.setattr(slc.er, "async_get", lambda hass: SimpleNamespace(entities=ents, async_get=ents.get))
+    a._satellite = lambda d: SAT
+    a._uses_me = lambda sat: uses_me
+    return a, services, tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "state", "uses_me", "pushed"), [
+    (500, "0.0", True, True),
+    (500, "500.0", True, False),
+    (500, "unavailable", True, False),
+    (500, "0.0", False, False),
+])
+async def test_name_pause_is_pushed_to_voice_pes(monkeypatch, value, state, uses_me, pushed):
+    a, services, tasks = _pause_agent(monkeypatch, value, {"number.lr_name_pause": SimpleNamespace(state=state)}, uses_me)
+    a._push_name_pause()
+    for t in tasks:
+        await t
+    expected = [("number", "set_value", {"entity_id": "number.lr_name_pause", "value": 500})] if pushed else []
+    assert services.calls == expected

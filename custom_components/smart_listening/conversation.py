@@ -17,6 +17,7 @@ log, and shown under Settings > Repairs until the agent answers again.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import difflib
 import json
@@ -66,6 +67,7 @@ from .const import (
     CONF_FOLLOWUP_SECONDS,
     CONF_FOLLOWUP_THRESHOLD,
     CONF_KEEP_LISTENING,
+    CONF_NAME_PAUSE,
     CONF_REPLY_SCRIPT,
     CONF_NAMES,
     CONF_TARGET_AGENT,
@@ -74,12 +76,14 @@ from .const import (
     CONF_WAKE_WORD_THRESHOLD,
     DEFAULTS,
     DEVICE_REPLIES,
+    DEVICE_NAME_PAUSE,
     DEVICE_RUN,
     DEVICE_SWITCH,
     DEVICE_THINKING,
     DEVICE_WAKE_WORD,
     DOMAIN,
     ECHO_SIMILARITY,
+    GREETING_ECHO_SIMILARITY,
     ECHO_WINDOW,
     OPEN_MIC_GAP,
     OPEN_MIC_WINDOW,
@@ -145,6 +149,30 @@ def _silent(user_input: conversation.ConversationInput) -> conversation.Conversa
     return conversation.ConversationResult(
         response=response, conversation_id=user_input.conversation_id, continue_conversation=False
     )
+
+
+def _strip_echo(text: str, said: str) -> tuple[str, bool]:
+    """Remove copies of what the assistant just said (heard back from the speaker) from the
+    start of a transcript: "Hi, how can I help? Hi, how can I help? What time is it?" gives
+    "What time is it?". Returns the rest and whether anything was removed."""
+    target = " ".join(re.findall(r"[a-z0-9']+", said.lower()))
+    n = len(target.split())
+    tokens = text.split()
+    removed = False
+    while tokens and n:
+        best_k, best = 0, 0.0
+        for k in range(max(1, n - 1), min(len(tokens), n + 1) + 1):
+            head = " ".join(re.findall(r"[a-z0-9']+", " ".join(tokens[:k]).lower()))
+            ratio = difflib.SequenceMatcher(None, head, target).ratio()
+            if ratio > best:
+                best_k, best = k, ratio
+        if best < GREETING_ECHO_SIMILARITY:
+            break
+        tokens = tokens[best_k:]
+        removed = True
+        while tokens and tokens[0].strip(".,!?").lower() in ("you", "today"):
+            tokens = tokens[1:]  # "...how can I help you?"
+    return " ".join(tokens), removed
 
 
 def _spoken(user_input: conversation.ConversationInput, speech: str) -> conversation.ConversationResult:
@@ -217,6 +245,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
         self._handle_timers = bool(opts[CONF_TIMERS])
         self._keep_listening = bool(opts[CONF_KEEP_LISTENING])
+        self._name_pause = int(opts[CONF_NAME_PAUSE])
         self._reply_script: str = opts.get(CONF_REPLY_SCRIPT) or ""
         # assist_satellite entity_id -> (Voice PE media player, volume) to restore once the
         # satellite starts listening after a greeting played on the room speaker
@@ -327,6 +356,22 @@ class SmartListeningAgent(conversation.ConversationEntity):
             )
 
         self.async_on_remove(self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record, event_filter=_is_listening))
+
+        # Keep each Voice PE's "Name pause" at this entry's setting: at startup, after an
+        # options change (the entity is re-added), and when a device reconnects or the
+        # number is changed on the device.
+        @callback
+        def _is_name_pause(event_data) -> bool:
+            return event_data["entity_id"].startswith("number.") and event_data["entity_id"].endswith("name_pause")
+
+        @callback
+        def _name_pause_changed(event: Event) -> None:
+            self._push_name_pause(event.data["entity_id"])
+
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_STATE_CHANGED, _name_pause_changed, event_filter=_is_name_pause)
+        )
+        self.async_on_remove(async_at_started(self.hass, lambda _h: self._push_name_pause()))
         self.async_on_remove(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record_reply_end, event_filter=_left_responding)
         )
@@ -390,6 +435,41 @@ class SmartListeningAgent(conversation.ConversationEntity):
             if ent.platform == "esphome" and ent.unique_id.endswith(suffix):
                 return ent.entity_id
         return None
+
+    def _uses_me(self, satellite: str) -> bool:
+        """Whether the satellite's pipeline sends its speech to this agent."""
+        from homeassistant.components.assist_pipeline import async_get_pipeline  # noqa: PLC0415
+
+        try:
+            sat = self.hass.data["assist_satellite"].get_entity(satellite)
+            pipeline = async_get_pipeline(self.hass, sat._resolve_pipeline() if sat else None)  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            return False
+        return pipeline.conversation_engine == self.entity_id
+
+    @callback
+    def _push_name_pause(self, only: str | None = None) -> None:
+        """Set "Name pause" on the Voice PEs that use this agent, where it differs."""
+        registry = er.async_get(self.hass)
+        entries = [registry.async_get(only)] if only else list(registry.entities.values())
+        for ent in entries:
+            if ent is None or ent.platform != "esphome" or not ent.unique_id.endswith(DEVICE_NAME_PAUSE):
+                continue
+            if not ent.device_id:
+                continue
+            state = self.hass.states.get(ent.entity_id)
+            try:
+                current = float(state.state) if state else None
+            except ValueError:
+                continue  # unavailable or unknown: pushed when it comes back
+            satellite = self._satellite(ent.device_id)
+            if current is None or current == self._name_pause or not satellite or not self._uses_me(satellite):
+                continue
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "number", "set_value", {"entity_id": ent.entity_id, "value": self._name_pause}, blocking=False
+                )
+            )
 
     def _satellite(self, device_id: str | None) -> str | None:
         if not device_id:
@@ -614,13 +694,22 @@ class SmartListeningAgent(conversation.ConversationEntity):
         if not self._is_speech_run(user_input.device_id):
             why = self._open_mic(user_input.device_id)
             if why == "summoned":
-                # The name was said on its own and we asked "How can I help?": this is the request.
-                text = user_input.text.strip()
-                rec = {"kind": "open_mic", "device_id": user_input.device_id, "text": text,
-                       "answer": bool(text), "reason": "after the name"}
-                if not text:
+                # The name was said on its own and we asked "How can I help?": this is the
+                # request, once the greeting heard back from the speaker is taken off.
+                heard = user_input.text.strip()
+                text, echo = _strip_echo(heard, SUMMONED_MESSAGE)
+                rec = {"kind": "open_mic", "device_id": user_input.device_id, "text": heard,
+                       "answer": bool(text.strip(" .,!?")), "reason": "after the name"}
+                if echo:
+                    rec["request"] = text
+                if not rec["answer"]:
+                    if echo:
+                        rec["reason"] = "greeting echo only"
                     self._log(rec)
                     return _silent(user_input)
+                if echo:
+                    user_input = copy.copy(user_input)
+                    user_input.text = text
                 return await self._answer(user_input, rec)
             if why == "reply":
                 # Judged like speech, with the follow-up check always asked.
