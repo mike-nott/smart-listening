@@ -135,11 +135,12 @@ async def test_keep_listening_after_every_answer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_name_alone_ends_quietly_then_greets(monkeypatch):
+async def test_name_alone_is_answered_like_any_reply_and_listens(monkeypatch):
     room = Room(monkeypatch, address=0.05)         # the classifier is not asked
     result, rec = await room.say("Nova.")
-    assert result.response.speech["plain"]["speech"] == "" and rec["reason"] == "name only"
-    assert room.forwarded == [] and "dev" in room.agent._summon_pending
+    assert result.response.speech["plain"]["speech"] == "Hi, how can I help?"
+    assert result.continue_conversation is True and rec["reason"] == "name only"
+    assert room.forwarded == [] and room.agent._invited["dev"][1] == "summoned"
     for text in ("Hey Nova", "Nova?"):
         _, rec = await room.say(text)
         assert rec["reason"] == "name only", text
@@ -176,3 +177,53 @@ async def test_request_after_the_name_is_answered_without_judging(monkeypatch):
     result, rec = await room.say("turn the kitchen lights off")
     assert rec["kind"] == "open_mic" and rec["reason"] == "after the name"
     assert room.forwarded == ["turn the kitchen lights off"]
+
+
+class _Services:
+    def __init__(self):
+        self.calls = []
+
+    async def async_call(self, domain, service, data, blocking=False):
+        self.calls.append((domain, service, data))
+
+
+def _greeter(monkeypatch, replies_switch, script):
+    room = Room(monkeypatch)
+    services = _Services()
+    states = {"switch.replies": SimpleNamespace(state=replies_switch) if replies_switch else None,
+              "media_player.vpe": SimpleNamespace(state="idle", attributes={"volume_level": 0.6}),
+              "script.room": SimpleNamespace(state="off") if script else None}
+    a = room.agent
+    a.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: states.get(e)), services=services,
+                             async_create_task=lambda coro: coro.close())
+    a._reply_script = "script.room" if script else ""
+    a._device_entity = lambda d, suffix: "switch.replies" if replies_switch else None
+    a._esphome_name = lambda sat: "home-assistant-voice-kitchen"
+    a._greeting_url = lambda sat: "http://ha:8123/api/tts_proxy/abc.mp3"
+    monkeypatch.setattr(slc.er, "async_get", lambda hass: None)
+    monkeypatch.setattr(slc.er, "async_entries_for_device", lambda reg, d: [
+        SimpleNamespace(entity_id="media_player.vpe", domain="media_player", platform="esphome")])
+    monkeypatch.setattr(slc, "async_call_later", lambda hass, delay, cb: None)
+    return a, services
+
+
+@pytest.mark.asyncio
+async def test_greeting_plays_on_the_room_speaker_like_replies(monkeypatch):
+    a, services = _greeter(monkeypatch, replies_switch="on", script=True)
+    await a._greet("dev", SAT)
+    assert services.calls == [
+        ("media_player", "volume_set", {"entity_id": "media_player.vpe", "volume_level": 0}),
+        ("script", "room", {"url": "http://ha:8123/api/tts_proxy/abc.mp3", "satellite": "home-assistant-voice-kitchen"}),
+        ("assist_satellite", "start_conversation",
+         {"entity_id": SAT, "start_media_id": "http://ha:8123/api/tts_proxy/abc.mp3", "preannounce": False}),
+    ]
+    assert a._restore_volume[SAT] == ("media_player.vpe", 0.6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("switch", "script"), [("off", True), (None, False)])
+async def test_greeting_plays_on_the_voice_pe_when_replies_do(monkeypatch, switch, script):
+    a, services = _greeter(monkeypatch, replies_switch=switch, script=script)
+    await a._greet("dev", SAT)
+    assert services.calls == [("assist_satellite", "start_conversation",
+                               {"entity_id": SAT, "start_message": "Hi, how can I help?", "preannounce": False})]

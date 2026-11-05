@@ -17,6 +17,10 @@ CONF_TIMER_THRESHOLD = "timer_threshold"
 # Keep the microphone open after every answer (judged as a possible follow-up), not only
 # when the agent asks to.
 CONF_KEEP_LISTENING = "keep_listening"
+# Script that plays replies on the room's speaker, called with "url" and "satellite" (the
+# Voice PE's ESPHome name). Used for the greeting when only the name was heard, so it comes
+# from the same speaker as every other reply. Empty: the greeting plays on the Voice PE.
+CONF_REPLY_SCRIPT = "reply_script"
 CONF_NAMES = "assistant_names"
 CONF_CLASSIFIER = "classifier"
 CONF_CLASSIFIER_URL = "classifier_url"
@@ -75,6 +79,7 @@ DEFAULTS = {
     CONF_AGENT_TIMEOUT: 60,
     CONF_TIMERS: True,
     CONF_KEEP_LISTENING: True,
+    CONF_REPLY_SCRIPT: "",
     # Measured on Clef: no wrong timer actions at 0.6 (2026-11-05, 60 requests).
     CONF_TIMER_THRESHOLD: 0.6,
     CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
@@ -113,6 +118,8 @@ DEVICE_SWITCH = "/switch/Smart Listening"
 DEVICE_RUN = "/binary_sensor/Smart Listening run"
 DEVICE_WAKE_WORD = "/text_sensor/Smart Listening wake word"
 DEVICE_THINKING = "/button/Smart Listening thinking"
+# Optional firmware switch: off means the Voice PE plays replies itself (speaker on its jack).
+DEVICE_REPLIES = "/switch/Replies on room speaker"
 # With the device switch off, a run flag older than this is treated as stale.
 RUN_MAX_AGE = 30
 

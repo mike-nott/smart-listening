@@ -11,7 +11,7 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Fuzzy Name Matching**: Transcription slips such as "Novva" still count as the name
 - ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said
 - ✅ **Natural Follow-ups**: The Voice PE listens again straight after each answer, so you can carry on without the name; each follow-up is judged too
-- ✅ **Classic Wake Word Too**: Say just "Nova" and pause: it answers "Hi, how can I help?" from the Voice PE and listens
+- ✅ **Classic Wake Word Too**: Say just "Nova" and pause: it answers "Hi, how can I help?" from the same speaker as its replies, and listens
 - ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored
 - ✅ **Short Commands Always Work**: "Nova, stop", "Nova, louder" and similar are answered without a model call
 - ✅ **Honest LEDs**: The thinking ring lights only once a request has been accepted, so the device stays dark while it ignores the TV

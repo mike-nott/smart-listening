@@ -34,6 +34,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.network import get_url
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
@@ -65,12 +66,14 @@ from .const import (
     CONF_FOLLOWUP_SECONDS,
     CONF_FOLLOWUP_THRESHOLD,
     CONF_KEEP_LISTENING,
+    CONF_REPLY_SCRIPT,
     CONF_NAMES,
     CONF_TARGET_AGENT,
     CONF_TIMER_THRESHOLD,
     CONF_TIMERS,
     CONF_WAKE_WORD_THRESHOLD,
     DEFAULTS,
+    DEVICE_REPLIES,
     DEVICE_RUN,
     DEVICE_SWITCH,
     DEVICE_THINKING,
@@ -214,6 +217,10 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
         self._handle_timers = bool(opts[CONF_TIMERS])
         self._keep_listening = bool(opts[CONF_KEEP_LISTENING])
+        self._reply_script: str = opts.get(CONF_REPLY_SCRIPT) or ""
+        # assist_satellite entity_id -> (Voice PE media player, volume) to restore once the
+        # satellite starts listening after a greeting played on the room speaker
+        self._restore_volume: dict[str, tuple[str, float]] = {}
         self._timer_threshold = float(opts[CONF_TIMER_THRESHOLD])
         self._entry_id = entry.entry_id
         self._title = entry.title
@@ -267,8 +274,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._invited: dict[str, tuple[float, str]] = {}
         # device_id -> when Smart Listening last handled a request from it (UTC)
         self._last_process: dict[str, Any] = {}
-        # device_ids whose run ended with only the name said: greet when the run ends
-        self._summon_pending: set[str] = set()
+
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -288,6 +294,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
             entity, new = event.data["entity_id"], event.data["new_state"]
             old = event.data.get("old_state")
             self._run_started[entity] = new.last_changed
+            self._restore(entity)
             ended = self._reply_ended.get(entity)
             self._run_after_reply[entity] = (old is not None and old.state == "responding") or (
                 ended is not None and (new.last_changed - ended).total_seconds() <= OPEN_MIC_GAP
@@ -506,16 +513,13 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
     @callback
     def _on_run_ended(self, event: Event) -> None:
-        """A Voice PE's speech run ended. If only the name was said (transcribed, or heard
-        by the wake word model while speech-to-text heard nothing), greet and listen."""
+        """A Voice PE's speech run ended without reaching Smart Listening, but its wake word
+        model heard the name: the name was said on its own (speech-to-text heard nothing).
+        Greet and listen."""
         ent = er.async_get(self.hass).async_get(event.data["entity_id"])
         if ent is None or ent.platform != "esphome" or not ent.unique_id.endswith(DEVICE_RUN) or not ent.device_id:
             return
         device_id = ent.device_id
-        if device_id in self._summon_pending:
-            self._summon_pending.discard(device_id)
-            self._summon(device_id, "name only")
-            return
         started = event.data["old_state"].last_changed
         handled = self._last_process.get(device_id)
         if handled is not None and handled >= started:
@@ -527,21 +531,82 @@ class SmartListeningAgent(conversation.ConversationEntity):
             self._summon(device_id, "wake word, no speech")
 
     def _summon(self, device_id: str, reason: str) -> None:
-        """Say "Hi, how can I help?" on the Voice PE itself and listen for the request."""
+        """Say "Hi, how can I help?" from the speaker replies come from, then listen."""
         satellite = self._satellite(device_id)
         if not satellite:
             return
         self._invited[device_id] = (time.monotonic(), "summoned")
         self._last_reply[device_id] = (time.monotonic(), SUMMONED_MESSAGE)
         self._log({"kind": "summon", "device_id": device_id, "reason": reason, "reply": SUMMONED_MESSAGE})
-        self.hass.async_create_task(
-            self.hass.services.async_call(
+        self.hass.async_create_task(self._greet(device_id, satellite))
+
+    def _esphome_name(self, satellite: str) -> str | None:
+        ent = er.async_get(self.hass).async_get(satellite)
+        entry = self.hass.config_entries.async_get_entry(ent.config_entry_id) if ent and ent.config_entry_id else None
+        return entry.data.get("device_name") if entry else None
+
+    def _greeting_url(self, satellite: str) -> str:
+        """The greeting in the satellite's own pipeline voice, as an absolute URL."""
+        from homeassistant.components import tts  # noqa: PLC0415
+        from homeassistant.components.assist_pipeline import async_get_pipeline  # noqa: PLC0415
+
+        sat = self.hass.data["assist_satellite"].get_entity(satellite)
+        pipeline = async_get_pipeline(self.hass, sat._resolve_pipeline() if sat else None)  # noqa: SLF001
+        options = {tts.ATTR_VOICE: pipeline.tts_voice} if pipeline.tts_voice else {}
+        stream = tts.async_create_stream(self.hass, pipeline.tts_engine, pipeline.tts_language, options)
+        stream.async_set_message(SUMMONED_MESSAGE)
+        return get_url(self.hass, prefer_external=False) + stream.url
+
+    async def _greet(self, device_id: str, satellite: str) -> None:
+        switch = self._device_entity(device_id, DEVICE_REPLIES)
+        replies = self.hass.states.get(switch) if switch else None
+        on_device = replies is not None and replies.state == "off"
+        name = self._esphome_name(satellite)
+        if on_device or not self._reply_script or not name or self.hass.states.get(self._reply_script) is None:
+            # Replies come from the Voice PE: greet from it and listen.
+            await self.hass.services.async_call(
                 "assist_satellite",
                 "start_conversation",
                 {"entity_id": satellite, "start_message": SUMMONED_MESSAGE, "preannounce": False},
                 blocking=False,
             )
+            return
+        # Replies come from the room speaker: play the greeting there through the same script,
+        # while the Voice PE plays it muted, then listens (as after any reply).
+        url = self._greeting_url(satellite)
+        player = next(
+            (e.entity_id for e in er.async_entries_for_device(er.async_get(self.hass), device_id)
+             if e.domain == "media_player" and e.platform == "esphome"),
+            None,
         )
+        if player and (state := self.hass.states.get(player)) is not None:
+            volume = state.attributes.get("volume_level")
+            if volume is not None:
+                self._restore_volume[satellite] = (player, float(volume))
+                await self.hass.services.async_call(
+                    "media_player", "volume_set", {"entity_id": player, "volume_level": 0}, blocking=True
+                )
+                async_call_later(self.hass, 20, lambda _now: self._restore(satellite))
+        domain, _, object_id = self._reply_script.partition(".")
+        await self.hass.services.async_call(
+            domain, object_id, {"url": url, "satellite": name}, blocking=False
+        )
+        await self.hass.services.async_call(
+            "assist_satellite",
+            "start_conversation",
+            {"entity_id": satellite, "start_media_id": url, "preannounce": False},
+            blocking=False,
+        )
+
+    @callback
+    def _restore(self, satellite: str) -> None:
+        if (saved := self._restore_volume.pop(satellite, None)) is not None:
+            player, volume = saved
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "media_player", "volume_set", {"entity_id": player, "volume_level": volume}, blocking=False
+                )
+            )
 
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         if user_input.device_id:
@@ -602,12 +667,15 @@ class SmartListeningAgent(conversation.ConversationEntity):
     async def _answer(
         self, user_input: conversation.ConversationInput, rec: dict[str, Any]
     ) -> conversation.ConversationResult:
-        if rec.get("reason") == "name only" and user_input.device_id:
-            # "Lorelai..." on its own: end this run quietly and, once it has ended, greet on
-            # the Voice PE itself and listen (faster than a reply through the room speaker).
-            self._summon_pending.add(user_input.device_id)
-            self._log(rec)
-            return _silent(user_input)
+        if rec.get("reason") == "name only":
+            # "Lorelai..." on its own: answer like any reply (same speaker) and keep listening;
+            # the next sentence is the request.
+            result = dataclasses.replace(_spoken(user_input, SUMMONED_MESSAGE), continue_conversation=True)
+            if user_input.device_id:
+                self._invited[user_input.device_id] = (time.monotonic(), "summoned")
+                self._last_reply[user_input.device_id] = (time.monotonic(), SUMMONED_MESSAGE)
+            self._log({**rec, "reply": SUMMONED_MESSAGE, "continue": True})
+            return result
 
         self._show_thinking(user_input.device_id)
         start = time.monotonic()

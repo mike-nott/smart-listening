@@ -39,6 +39,7 @@ from .const import (
     CONF_FOLLOWUP_SECONDS,
     CONF_FOLLOWUP_THRESHOLD,
     CONF_KEEP_LISTENING,
+    CONF_REPLY_SCRIPT,
     CONF_NAMES,
     CONF_TARGET_AGENT,
     CONF_TIMER_THRESHOLD,
@@ -52,6 +53,7 @@ from .const import (
 from .conversation import parse_names
 
 _AGENT = selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation"))
+_SCRIPT = selector.EntitySelector(selector.EntitySelectorConfig(domain="script"))
 _TEXT = selector.TextSelector()
 _URL = selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.URL))
 _PASSWORD = selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD))
@@ -87,8 +89,9 @@ def _validate_basics(data: dict[str, Any], errors: dict[str, str]) -> None:
 
 def _clear_omitted(user_input: dict[str, Any], candidate: dict[str, Any]) -> None:
     """An optional field left empty is left out of the form's data: clear it."""
-    if CONF_BACKUP_AGENT not in user_input:
-        candidate[CONF_BACKUP_AGENT] = ""
+    for key in (CONF_BACKUP_AGENT, CONF_REPLY_SCRIPT):
+        if key not in user_input:
+            candidate[key] = ""
 
 
 async def _validate_classifier(hass, data: dict[str, Any], errors: dict[str, str]) -> None:
@@ -274,12 +277,15 @@ class SmartListeningOptionsFlow(OptionsFlow):
                         vol.Required(CONF_FOLLOWUP_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_FOLLOWUP_SECONDS): _SECONDS,
                         vol.Required(CONF_KEEP_LISTENING): _BOOL,
+                        vol.Optional(CONF_REPLY_SCRIPT): _SCRIPT,
                         vol.Required(CONF_TIMERS): _BOOL,
                         vol.Required(CONF_TIMER_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_DECISION_LOG): _BOOL,
                     }
                 ),
-                user_input or {k: v for k, v in current.items() if not (k == CONF_BACKUP_AGENT and not v)},
+                user_input or {
+                    k: v for k, v in current.items() if not (k in (CONF_BACKUP_AGENT, CONF_REPLY_SCRIPT) and not v)
+                },
             ),
             errors=errors,
         )

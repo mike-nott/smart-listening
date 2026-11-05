@@ -9,13 +9,15 @@
   ],
   "config_flow": true,
   "dependencies": [
+    "assist_pipeline",
     "conversation",
-    "intent"
+    "intent",
+    "tts"
   ],
   "documentation": "https://github.com/mike-nott/smart-listening",
   "integration_type": "service",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/mike-nott/smart-listening/issues",
   "requirements": [],
-  "version": "0.5.1"
+  "version": "0.5.2"
 }
