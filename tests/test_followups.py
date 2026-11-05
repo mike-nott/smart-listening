@@ -135,22 +135,42 @@ async def test_keep_listening_after_every_answer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_name_alone_asks_how_can_i_help_and_listens(monkeypatch):
+async def test_name_alone_ends_quietly_then_greets(monkeypatch):
     room = Room(monkeypatch, address=0.05)         # the classifier is not asked
     result, rec = await room.say("Nova.")
-    assert result.response.speech["plain"]["speech"] == "How can I help?"
-    assert result.continue_conversation is True and rec["reason"] == "name only"
-    assert room.forwarded == [] and room.agent._invited["dev"][1] == "summoned"
+    assert result.response.speech["plain"]["speech"] == "" and rec["reason"] == "name only"
+    assert room.forwarded == [] and "dev" in room.agent._summon_pending
     for text in ("Hey Nova", "Nova?"):
-        room.agent._invited.clear()
         _, rec = await room.say(text)
         assert rec["reason"] == "name only", text
+
+
+def test_greeting_on_the_voice_pe(monkeypatch):
+    room = Room(monkeypatch)
+    calls = []
+
+    async def async_call(domain, service, data, blocking=False):
+        calls.append((domain, service, data))
+
+    def create_task(coro):
+        coro.close()
+        calls.append("task")
+
+    room.agent.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: None),
+                                      services=SimpleNamespace(async_call=async_call),
+                                      async_create_task=create_task)
+    room.agent._summon("dev", "wake word, no speech")
+    assert calls == ["task"] and room.agent._invited["dev"][1] == "summoned"
+    assert room.agent._last_reply["dev"][1] == "Hi, how can I help?"
+    assert room.logged[-1] == {"kind": "summon", "device_id": "dev", "reason": "wake word, no speech",
+                               "reply": "Hi, how can I help?"}
 
 
 @pytest.mark.asyncio
 async def test_request_after_the_name_is_answered_without_judging(monkeypatch):
     room = Room(monkeypatch, followup=0.0, address=0.0)
     await room.say("Nova.")
+    room.agent._invited["dev"] = (slc.time.monotonic(), "summoned")  # greeted when the run ended
     room.speech_run = False
     room.agent._run_after_reply[SAT] = True
     result, rec = await room.say("turn the kitchen lights off")

@@ -100,7 +100,7 @@ CLASSIFIER_TIMEOUT = 30
 # Spoken when neither the target agent nor the backup could answer an accepted request.
 UNAVAILABLE_MESSAGE = "Sorry, {name} isn't available right now."
 # Spoken when only the assistant's name is said ("Lorelai..."), before listening.
-SUMMONED_MESSAGE = "How can I help?"
+SUMMONED_MESSAGE = "Hi, how can I help?"
 # Consecutive failures before a repair issue appears (a missing agent raises one at once).
 AGENT_ISSUE_AFTER = 3
 CLASSIFIER_ISSUE_AFTER = 3

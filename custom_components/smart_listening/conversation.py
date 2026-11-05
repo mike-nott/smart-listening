@@ -265,6 +265,10 @@ class SmartListeningAgent(conversation.ConversationEntity):
         # device_id -> (when the microphone was kept open (monotonic), why: "reply" or
         # "summoned", the name said on its own)
         self._invited: dict[str, tuple[float, str]] = {}
+        # device_id -> when Smart Listening last handled a request from it (UTC)
+        self._last_process: dict[str, Any] = {}
+        # device_ids whose run ended with only the name said: greet when the run ends
+        self._summon_pending: set[str] = set()
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -304,9 +308,23 @@ class SmartListeningAgent(conversation.ConversationEntity):
         def _record_reply_end(event: Event) -> None:
             self._reply_ended[event.data["entity_id"]] = event.data["new_state"].last_changed
 
+        @callback
+        def _run_ended(event_data) -> bool:
+            old, new = event_data.get("old_state"), event_data.get("new_state")
+            return (
+                event_data["entity_id"].startswith("binary_sensor.")
+                and old is not None
+                and old.state == STATE_ON
+                and new is not None
+                and new.state != STATE_ON
+            )
+
         self.async_on_remove(self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record, event_filter=_is_listening))
         self.async_on_remove(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record_reply_end, event_filter=_left_responding)
+        )
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._on_run_ended, event_filter=_run_ended)
         )
 
         # Agents (MCP Assist and others) can load late, so check the target a little
@@ -484,7 +502,50 @@ class SmartListeningAgent(conversation.ConversationEntity):
             return None
         return invited[1]
 
+    # The name on its own -----------------------------------------------------------------
+
+    @callback
+    def _on_run_ended(self, event: Event) -> None:
+        """A Voice PE's speech run ended. If only the name was said (transcribed, or heard
+        by the wake word model while speech-to-text heard nothing), greet and listen."""
+        ent = er.async_get(self.hass).async_get(event.data["entity_id"])
+        if ent is None or ent.platform != "esphome" or not ent.unique_id.endswith(DEVICE_RUN) or not ent.device_id:
+            return
+        device_id = ent.device_id
+        if device_id in self._summon_pending:
+            self._summon_pending.discard(device_id)
+            self._summon(device_id, "name only")
+            return
+        started = event.data["old_state"].last_changed
+        handled = self._last_process.get(device_id)
+        if handled is not None and handled >= started:
+            return  # Smart Listening judged this run
+        hint_entity = self._device_entity(device_id, DEVICE_WAKE_WORD)
+        hint = self.hass.states.get(hint_entity) if hint_entity else None
+        heard = (hint.state if hint else "").strip().lower()
+        if heard and any(name.lower() in heard for name in self._names):
+            self._summon(device_id, "wake word, no speech")
+
+    def _summon(self, device_id: str, reason: str) -> None:
+        """Say "Hi, how can I help?" on the Voice PE itself and listen for the request."""
+        satellite = self._satellite(device_id)
+        if not satellite:
+            return
+        self._invited[device_id] = (time.monotonic(), "summoned")
+        self._last_reply[device_id] = (time.monotonic(), SUMMONED_MESSAGE)
+        self._log({"kind": "summon", "device_id": device_id, "reason": reason, "reply": SUMMONED_MESSAGE})
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "assist_satellite",
+                "start_conversation",
+                {"entity_id": satellite, "start_message": SUMMONED_MESSAGE, "preannounce": False},
+                blocking=False,
+            )
+        )
+
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+        if user_input.device_id:
+            self._last_process[user_input.device_id] = dt_util.utcnow()
         if not self._is_speech_run(user_input.device_id):
             why = self._open_mic(user_input.device_id)
             if why == "summoned":
@@ -541,15 +602,12 @@ class SmartListeningAgent(conversation.ConversationEntity):
     async def _answer(
         self, user_input: conversation.ConversationInput, rec: dict[str, Any]
     ) -> conversation.ConversationResult:
-        if rec.get("reason") == "name only":
-            # "Lorelai..." on its own: ask what they want and keep listening, like a wake word.
-            result = _spoken(user_input, SUMMONED_MESSAGE)
-            result = dataclasses.replace(result, continue_conversation=True)
-            if user_input.device_id:
-                self._invited[user_input.device_id] = (time.monotonic(), "summoned")
-                self._last_reply[user_input.device_id] = (time.monotonic(), SUMMONED_MESSAGE)
-            self._log({**rec, "reply": SUMMONED_MESSAGE, "continue": True})
-            return result
+        if rec.get("reason") == "name only" and user_input.device_id:
+            # "Lorelai..." on its own: end this run quietly and, once it has ended, greet on
+            # the Voice PE itself and listen (faster than a reply through the room speaker).
+            self._summon_pending.add(user_input.device_id)
+            self._log(rec)
+            return _silent(user_input)
 
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
