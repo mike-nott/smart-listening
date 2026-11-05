@@ -38,6 +38,17 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .classifier import make_classifier
+from .timers import (
+    ACTION_INTENTS,
+    NEEDS_DURATION,
+    TIMER_ACTIONS,
+    confirmation,
+    is_all,
+    mentions_time,
+    parse_duration,
+    parse_name,
+    slots_for,
+)
 from .const import (
     AGENT_ISSUE_AFTER,
     CLASSIFIER_DISPLAY_NAMES,
@@ -55,6 +66,8 @@ from .const import (
     CONF_FOLLOWUP_THRESHOLD,
     CONF_NAMES,
     CONF_TARGET_AGENT,
+    CONF_TIMER_THRESHOLD,
+    CONF_TIMERS,
     CONF_WAKE_WORD_THRESHOLD,
     DEFAULTS,
     DEVICE_RUN,
@@ -126,6 +139,41 @@ def _silent(user_input: conversation.ConversationInput) -> conversation.Conversa
     )
 
 
+def _spoken(user_input: conversation.ConversationInput, speech: str) -> conversation.ConversationResult:
+    response = intent.IntentResponse(language=user_input.language)
+    response.async_set_speech(speech)
+    return conversation.ConversationResult(
+        response=response, conversation_id=user_input.conversation_id, continue_conversation=False
+    )
+
+
+_LEADING_FILLER = re.compile(r"^(?:hey|hi|ok|okay|oh|um|uh)\b[\s,.!]*", re.IGNORECASE)
+
+
+def _strip_name(text: str, names: tuple[str, ...]) -> str:
+    """The request without the assistant's name: "Lorelai, set a timer for 10 seconds"
+    -> "set a timer for 10 seconds". Same fuzzy match as _name_match; digits are kept."""
+    words = list(re.finditer(r"[A-Za-z]+", text))
+    best, span = 0.0, None
+    for name in names:
+        target = re.sub(r"[^a-z]", "", name.lower())
+        for i in range(len(words)):
+            for k in (1, 2):
+                if i + k <= len(words):
+                    joined = "".join(w.group(0).lower() for w in words[i : i + k])
+                    ratio = difflib.SequenceMatcher(None, joined, target).ratio()
+                    if ratio > best:
+                        best, span = ratio, (words[i].start(), words[i + k - 1].end())
+    if span is None or best < NAME_THRESHOLD:
+        return text.strip()
+    out = text[: span[0]] + text[span[1] :]
+    out = re.sub(r"^[\s,.!?:;-]+", "", out)
+    out = _LEADING_FILLER.sub("", out)
+    out = re.sub(r"\s*,\s*([.!?])", r"\1", out)
+    out = re.sub(r"\s+", " ", out).strip(" ,")
+    return out
+
+
 def _unavailable(user_input: conversation.ConversationInput, name: str) -> conversation.ConversationResult:
     """Spoken reply when no agent could answer an accepted request."""
     response = intent.IntentResponse(language=user_input.language)
@@ -159,6 +207,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._target_agent: str = opts[CONF_TARGET_AGENT]
         self._backup_agent: str = opts.get(CONF_BACKUP_AGENT) or ""
         self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
+        self._handle_timers = bool(opts[CONF_TIMERS])
+        self._timer_threshold = float(opts[CONF_TIMER_THRESHOLD])
         self._entry_id = entry.entry_id
         self._title = entry.title
         # Consecutive failures, and whether this agent raised a repair issue. An issue can
@@ -389,9 +439,17 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         if not self._is_speech_run(user_input.device_id):
-            result, info = await self._forward(user_input)
-            self._log({"kind": "passthrough", "device_id": user_input.device_id, "text": user_input.text,
-                       **info, "reply": _speech(result)[:300]})
+            rec = {"kind": "passthrough", "device_id": user_input.device_id, "text": user_input.text}
+            result, timer = await self._try_timer(user_input, user_input.text)
+            if timer:
+                rec["timer"] = timer
+            if result is not None:
+                rec["answered_by"] = "timers"
+            else:
+                result, info = await self._forward(user_input)
+                rec.update(info)
+            rec["reply"] = _speech(result)[:300]
+            self._log(rec)
             return result
 
         rec = await self._assess(user_input)
@@ -401,7 +459,14 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
-        result, info = await self._forward(user_input)
+        result, timer = await self._try_timer(user_input, rec["text"])
+        if timer:
+            rec["timer"] = timer
+        if result is not None:
+            rec["answered_by"] = "timers"
+            info: dict[str, Any] = {}
+        else:
+            result, info = await self._forward(user_input)
         rec.update(info)
         rec["reply"] = _speech(result)[:300]
         rec["agent_ms"] = round((time.monotonic() - start) * 1000)
@@ -412,6 +477,79 @@ class SmartListeningAgent(conversation.ConversationEntity):
             result = dataclasses.replace(result, continue_conversation=False)
         self._log(rec)
         return result
+
+    # Timers ---------------------------------------------------------------------------
+
+    async def _try_timer(
+        self, user_input: conversation.ConversationInput, text: str
+    ) -> tuple[conversation.ConversationResult | None, dict[str, Any] | None]:
+        """Handle a Voice PE timer request here. Returns (result, log info); a None result
+        means "pass it to the agent". Requests without a time word cost nothing."""
+        if not self._handle_timers or self._classifier is None:
+            return None, None
+        request = _strip_name(text, self._names)
+        if not mentions_time(request):
+            return None, None
+        answer = await self._classifier.timer_action(request)
+        self._classifier_health({"timer": answer})
+        info: dict[str, Any] = {"request": request, "ms": answer.get("ms")}
+        if "error" in answer:
+            info["error"] = answer["error"]
+            return None, info
+        action, p = answer["best"], answer["p"]
+        info.update(action=action, p=p)
+        if action not in TIMER_ACTIONS or p < self._timer_threshold:
+            return None, info
+        if action == "cancel" and is_all(request):
+            action = "cancel_all"
+        seconds = parse_duration(request) if action in NEEDS_DURATION else None
+        if action in NEEDS_DURATION and not seconds:
+            info["error"] = "no duration"
+            return None, info
+        name = parse_name(request) if action != "cancel_all" else None
+        slots: dict[str, Any] = slots_for(seconds) if seconds else {}
+        if name:
+            slots["name"] = {"value": name}
+        info.update(intent=ACTION_INTENTS[action], seconds=seconds, name=name)
+
+        from homeassistant.components.intent.timers import (  # noqa: PLC0415
+            MultipleTimersMatchedError,
+            TimerNotFoundError,
+            TimersNotSupportedError,
+        )
+
+        try:
+            response = await intent.async_handle(
+                self.hass,
+                DOMAIN,
+                ACTION_INTENTS[action],
+                slots,
+                request,
+                user_input.context,
+                user_input.language,
+                "conversation",
+                user_input.device_id,
+                user_input.satellite_id,
+                self.entity_id,
+            )
+        except TimersNotSupportedError:
+            info["error"] = "device has no timers"
+            return None, info
+        except TimerNotFoundError:
+            speech = f"I couldn't find the {name} timer." if name else "I couldn't find that timer."
+            info["error"] = "timer not found"
+        except MultipleTimersMatchedError:
+            speech = "There's more than one timer. Please say which one."
+            info["error"] = "several timers matched"
+        except intent.IntentError as err:
+            info["error"] = repr(err)[:200]
+            return None, info
+        else:
+            speech = confirmation(action, seconds, name, response.speech_slots)
+        result = _spoken(user_input, speech)
+        if user_input.device_id:
+            self._last_reply[user_input.device_id] = (time.monotonic(), speech)
+        return result, info
 
     # Health: warnings and repair issues -----------------------------------------------
 
@@ -455,7 +593,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._agent_issue = True
 
     def _classifier_health(self, rec: dict[str, Any]) -> None:
-        results = [r for r in (rec.get("address"), rec.get("followup")) if r]
+        results = [r for r in (rec.get("address"), rec.get("followup"), rec.get("timer")) if r]
         if not results:
             return
         errors = [r["error"] for r in results if "error" in r]

@@ -17,6 +17,7 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Choice of Classifier**: Clef (self-hosted or on Cloudflare), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
 - ✅ **Several Assistants**: One config entry per assistant, each with its own names and conversation agent
 - ✅ **Per-Device Off Switch**: Turn Smart Listening off on any Voice PE to get the stock wake word behaviour back
+- ✅ **Voice PE Timers**: "Nova, set a timer for 10 seconds" starts the Voice PE's own timer (LED countdown, ring) in about a tenth of a second, without the conversation agent, and loose wording works too
 - ✅ **Backup Agent**: If the main conversation agent is down, requests go to a backup; failing that, the assistant says it isn't available instead of staying silent
 - ✅ **Visible Failures**: An agent or classifier that stops answering shows under Settings → Repairs until it recovers
 - ✅ **Decision Log**: Optional log of every decision, with scores, for tuning
@@ -139,6 +140,8 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 | Conversation agent | | The agent that answers accepted requests |
 | Backup conversation agent | None | Answers when the main agent is missing, fails, times out or reports a server error |
 | Agent timeout | 60 s | How long an agent may take to answer before it counts as failed |
+| Handle Voice PE timers | On | Timer commands are handled by Smart Listening on the Voice PE that heard them (see [Timers](#timers)) |
+| Timer threshold | 0.6 | How sure the classifier must be that a request is a timer command |
 | Assistant names | | Names the assistant answers to, comma separated |
 | Classifier | Clef | How speech containing the name is judged |
 | Request threshold | Clef 0.5, Jev 0.7, others 0.8 | How sure the classifier must be that speech containing the name is a request |
@@ -192,6 +195,25 @@ On follow-ups, Jev accepted all 7 genuine follow-ups and none of the 5 unrelated
 
 Turn on the decision log while tuning. Each line holds the transcript, the name match, the classifier's scores and the decision.
 
+### Timers
+
+Home Assistant's Voice PE timers (the LED ring countdown and the ring when it ends) only start when Home Assistant's own timer command runs for that Voice PE. LLM agents usually can't do that, so Smart Listening handles timers itself:
+
+1. An accepted request that mentions a time ("timer", "minutes", "how long", "half an hour"...) is put to the classifier as one question: start, cancel, add time, take off time, pause, resume, how long's left, a reminder, or something else. Requests without a time word go straight to the conversation agent, with no extra delay.
+2. If it's a timer command with a score of at least the timer threshold, Smart Listening reads the duration ("10 seconds", "an hour and a half", "ninety seconds") and the timer's name ("the pasta timer"), runs the timer command on the Voice PE that heard it, and replies ("Timer set for 10 seconds.").
+3. Anything else goes to the conversation agent as usual: reminders with a message ("remind me in 15 minutes to take the washing out"), questions that only mention a time, low scores, or a duration it can't read.
+
+Loose wording works: "time the eggs, 6 minutes", "count down three minutes", "give the timer another two minutes", "how long until the pasta's done?". Named timers, "cancel all the timers", and pressing the Voice PE's button and asking all work too. To stop a ringing timer, say the assistant's name or press the button, as usual.
+
+Measured on 60 labelled requests (40 timer commands, 5 reminders, 15 that only mention a time):
+
+| Classifier | Time per check | Right | Wrong timer action at 0.6 | Timer commands left to the agent |
+| --- | --- | --- | --- | --- |
+| Clef (self-hosted) | 68 ms (median) | 53/60 | 0 | 1 |
+| Jev `jev-1.14.0` | 186 ms (median) | 58/60 | 0 | 2 |
+
+Timers need a classifier (not "name only") and work in English only. Requests in other languages go to the agent.
+
 ### When the conversation agent is down
 
 If the agent that answers requests can't be reached, Smart Listening does not leave you in silence:
@@ -219,6 +241,9 @@ Smart Listening changes what your Voice PEs send off the device:
 - Is the **Smart Listening** switch on? It turns off after every firmware install
 - Is the device's **Assistant** set to the pipeline that uses the Smart Listening agent? If the pipeline was renamed, re-select it
 - Turn on the decision log and speak. No new line means the request never reached Smart Listening (check the pipeline); a line with `"answer": false` shows how it was judged
+
+### A timer request went to the agent instead
+Read the decision log line: the `timer` field shows the classifier's choice (`action`), its score (`p`) and any `error` (for example "no duration"). Lower the timer threshold a little if real timer commands score just below it, or say the duration in plain numbers.
 
 ### The assistant says it isn't available
 The main agent and the backup (if any) both failed. Check **Settings → Repairs**, and the `agent_error` and `backup_error` fields in the decision log. A missing agent usually means its integration failed to load: for MCP Assist, check that the server it connects to is running.

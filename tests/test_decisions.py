@@ -36,7 +36,7 @@ class FakeClassifier(cl.Classifier):
         self.p_address, self.p_followup, self.error = address, followup, error
         self.calls: list[str] = []
 
-    async def ask(self, state, questions):
+    async def ask(self, state, questions, text_field=None):
         key = cl.ADDRESS if cl.ADDRESS in questions else next(iter(questions))
         self.calls.append(key)
         if self.error:
@@ -303,7 +303,7 @@ async def test_kind_question_is_asked_first():
     seen = []
 
     class Recorder(FakeClassifier):
-        async def ask(self, state, questions):
+        async def ask(self, state, questions, text_field=None):
             seen.append(list(questions))
             return await super().ask(state, {cl.ADDRESS: None})
 

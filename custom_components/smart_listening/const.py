@@ -10,6 +10,10 @@ CONF_TARGET_AGENT = "target_agent"
 CONF_BACKUP_AGENT = "backup_agent"
 # Seconds an agent may take before it counts as failed.
 CONF_AGENT_TIMEOUT = "agent_timeout"
+# Voice PE timers handled by Smart Listening itself (see timers.py), and the classifier
+# score a timer action needs.
+CONF_TIMERS = "handle_timers"
+CONF_TIMER_THRESHOLD = "timer_threshold"
 CONF_NAMES = "assistant_names"
 CONF_CLASSIFIER = "classifier"
 CONF_CLASSIFIER_URL = "classifier_url"
@@ -66,6 +70,9 @@ CLASSIFIER_DEFAULTS = {
 DEFAULTS = {
     CONF_BACKUP_AGENT: "",
     CONF_AGENT_TIMEOUT: 60,
+    CONF_TIMERS: True,
+    # Measured on Clef: no wrong timer actions at 0.6 (2026-11-05, 60 requests).
+    CONF_TIMER_THRESHOLD: 0.6,
     CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
     CONF_CLASSIFIER_URL: "",
     CONF_CLASSIFIER_MODEL: "",

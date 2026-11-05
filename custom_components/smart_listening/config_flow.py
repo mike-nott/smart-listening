@@ -40,6 +40,8 @@ from .const import (
     CONF_FOLLOWUP_THRESHOLD,
     CONF_NAMES,
     CONF_TARGET_AGENT,
+    CONF_TIMER_THRESHOLD,
+    CONF_TIMERS,
     CONF_WAKE_WORD_THRESHOLD,
     DEFAULTS,
     DOMAIN,
@@ -270,6 +272,8 @@ class SmartListeningOptionsFlow(OptionsFlow):
                         vol.Required(CONF_WAKE_WORD_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_FOLLOWUP_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_FOLLOWUP_SECONDS): _SECONDS,
+                        vol.Required(CONF_TIMERS): _BOOL,
+                        vol.Required(CONF_TIMER_THRESHOLD): _PROBABILITY,
                         vol.Required(CONF_DECISION_LOG): _BOOL,
                     }
                 ),

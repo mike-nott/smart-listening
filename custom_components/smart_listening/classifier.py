@@ -19,6 +19,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.httpx_client import get_async_client
 
+from .timers import TIMER_CRITERIA, TIMER_KEY, TIMER_QUESTION, timer_state
 from .const import (
     CLASSIFIER_CLEF,
     CLASSIFIER_CLEF_CLOUD,
@@ -107,15 +108,32 @@ class Classifier:
         rec["p"] = ((rec.get("answers") or {}).get(FOLLOWUP) or {}).get("followup", 0.0)
         return rec
 
-    async def ask(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+    async def timer_action(self, text: str) -> dict[str, Any]:
+        """What a request mentioning a time wants: {"best", "p", "probs", "ms"} or {"error", "ms"}.
+
+        Always uses the documented "instructions" field, which the timer threshold was
+        measured with (see timers.py)."""
+        questions = {
+            TIMER_KEY: {"type": "choice", "question": TIMER_QUESTION, "criteria": TIMER_CRITERIA}
+        }
+        rec = await self.ask(timer_state(text), questions, text_field="instructions")
+        probs = (rec.get("answers") or {}).get(TIMER_KEY) or {}
+        if "error" in rec or not probs:
+            return {"ms": rec.get("ms"), "error": rec.get("error", "no answer")}
+        best = max(probs, key=probs.get)
+        return {"ms": rec["ms"], "best": best, "p": round(probs[best], 4), "probs": probs}
+
+    async def ask(self, state: Any, questions: dict[str, Any], text_field: str | None = None) -> dict[str, Any]:
         start = time.monotonic()
         try:
-            answers = await self._ask(state, questions)
+            answers = await self._ask(state, questions, text_field)
             return {"ms": round((time.monotonic() - start) * 1000), "answers": answers}
         except Exception as err:  # noqa: BLE001  (never retry; the server may be shared)
             return {"ms": round((time.monotonic() - start) * 1000), "error": repr(err)[:200]}
 
-    async def _ask(self, state: Any, questions: dict[str, Any]) -> dict[str, dict[str, float]]:
+    async def _ask(
+        self, state: Any, questions: dict[str, Any], text_field: str | None = None
+    ) -> dict[str, dict[str, float]]:
         raise NotImplementedError
 
     async def check(self) -> None:
@@ -130,10 +148,11 @@ class SystemOneClassifier(Classifier):
     # Field that carries the question text.
     text_field = "instructions"
 
-    def _payload(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+    def _payload(self, state: Any, questions: dict[str, Any], text_field: str | None = None) -> dict[str, Any]:
+        field = text_field or self.text_field
         qs = {}
         for k, q in questions.items():
-            qs[k] = {"type": q["type"], self.text_field: q["question"]}
+            qs[k] = {"type": q["type"], field: q["question"]}
             if q.get("criteria") is not None:
                 qs[k]["criteria"] = q["criteria"]
         return {"model": self.model, "state": state, "questions": qs}
@@ -141,9 +160,11 @@ class SystemOneClassifier(Classifier):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    async def _ask(self, state: Any, questions: dict[str, Any]) -> dict[str, dict[str, float]]:
+    async def _ask(
+        self, state: Any, questions: dict[str, Any], text_field: str | None = None
+    ) -> dict[str, dict[str, float]]:
         resp = await get_async_client(self.hass).post(
-            self.url, json=self._payload(state, questions), headers=self._headers(), timeout=CLASSIFIER_TIMEOUT
+            self.url, json=self._payload(state, questions, text_field), headers=self._headers(), timeout=CLASSIFIER_TIMEOUT
         )
         resp.raise_for_status()
         data = resp.json()
@@ -168,8 +189,8 @@ class ClefClassifier(SystemOneClassifier):
         super().__init__(hass, url, model or "clef", api_key)
         self.text_field = text_field
 
-    def _payload(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
-        return {**super()._payload(state, questions), "images": []}
+    def _payload(self, state: Any, questions: dict[str, Any], text_field: str | None = None) -> dict[str, Any]:
+        return {**super()._payload(state, questions, text_field), "images": []}
 
     async def check(self) -> None:
         base = self.url.split("/v1/")[0].rstrip("/")
@@ -264,7 +285,9 @@ class OpenAIClassifier(Classifier):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    async def _ask(self, state: str, questions: dict[str, Any]) -> dict[str, dict[str, float]]:
+    async def _ask(
+        self, state: str, questions: dict[str, Any], text_field: str | None = None
+    ) -> dict[str, dict[str, float]]:
         client = get_async_client(self.hass)
         answers: dict[str, dict[str, float]] = {}
         for key, q in questions.items():
