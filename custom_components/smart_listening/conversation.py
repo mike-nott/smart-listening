@@ -7,10 +7,16 @@ meant for the assistant are passed to the target agent; the rest get an empty re
 HA skips text-to-speech and saves nothing to the chat history.
 
 Wake word and button requests (run sensor off) are passed through unchanged.
+
+If the target agent is missing, raises, times out or reports a server failure, the
+request goes to the backup agent; if that fails too, the assistant says it isn't
+available. Failures are written to the decision log, logged once in Home Assistant's
+log, and shown under Settings > Repairs until the agent answers again.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import difflib
 import json
@@ -26,12 +32,19 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED, MATCH_ALL, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .classifier import make_classifier
 from .const import (
+    AGENT_ISSUE_AFTER,
     CLASSIFIER_DISPLAY_NAMES,
+    CLASSIFIER_ISSUE_AFTER,
     CONF_ADDRESS_THRESHOLD,
+    CONF_AGENT_TIMEOUT,
+    CONF_BACKUP_AGENT,
     CONF_CLASSIFIER,
     CONF_CLASSIFIER_API_KEY,
     CONF_CLASSIFIER_MODEL,
@@ -57,6 +70,8 @@ from .const import (
     NAME_THRESHOLD,
     RUN_MAX_AGE,
     SHORT_COMMANDS,
+    STARTUP_CHECK_DELAY,
+    UNAVAILABLE_MESSAGE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,6 +126,20 @@ def _silent(user_input: conversation.ConversationInput) -> conversation.Conversa
     )
 
 
+def _unavailable(user_input: conversation.ConversationInput, name: str) -> conversation.ConversationResult:
+    """Spoken reply when no agent could answer an accepted request."""
+    response = intent.IntentResponse(language=user_input.language)
+    response.async_set_error(intent.IntentResponseErrorCode.UNKNOWN, UNAVAILABLE_MESSAGE.format(name=name))
+    return conversation.ConversationResult(
+        response=response, conversation_id=user_input.conversation_id, continue_conversation=False
+    )
+
+
+def issue_id(kind: str, entry_id: str) -> str:
+    """Repair issue id for an entry ("agent" or "classifier")."""
+    return f"{kind}_unavailable_{entry_id}"
+
+
 def _append(path: str, line: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path) and os.path.getsize(path) > LOG_MAX_BYTES:
@@ -128,6 +157,16 @@ class SmartListeningAgent(conversation.ConversationEntity):
     def __init__(self, entry: ConfigEntry) -> None:
         opts = {**DEFAULTS, **entry.data, **entry.options}
         self._target_agent: str = opts[CONF_TARGET_AGENT]
+        self._backup_agent: str = opts.get(CONF_BACKUP_AGENT) or ""
+        self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
+        self._entry_id = entry.entry_id
+        self._title = entry.title
+        # Consecutive failures, and whether a repair issue is showing.
+        self._agent_failures = 0
+        self._agent_issue = False
+        self._classifier_failures = 0
+        self._classifier_issue = False
+        self._cancel_startup_check = None
         self._names = parse_names(opts[CONF_NAMES])
         first, others = self._names[0], self._names[1:]
         # How the classifier is told the assistant's name.
@@ -180,15 +219,44 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
         self.async_on_remove(self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record, event_filter=_is_listening))
 
+        # Agents (MCP Assist and others) can load late, so check the target a little
+        # after Home Assistant has started rather than at setup.
+        @callback
+        def _started(_hass: HomeAssistant) -> None:
+            self._cancel_startup_check = async_call_later(self.hass, STARTUP_CHECK_DELAY, self._startup_check)
+
+        self.async_on_remove(async_at_started(self.hass, _started))
+        self.async_on_remove(self._cancel_check)
+
+    @callback
+    def _cancel_check(self) -> None:
+        if self._cancel_startup_check is not None:
+            self._cancel_startup_check()
+            self._cancel_startup_check = None
+
+    @callback
+    def _startup_check(self, _now: Any) -> None:
+        self._cancel_startup_check = None
+        if self._agent(self._target_agent) is None:
+            _LOGGER.warning(
+                "Smart Listening %s: the conversation agent %s was not found after startup",
+                self._title,
+                self._target_agent,
+            )
+            self._raise_agent_issue()
+
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
         return MATCH_ALL
 
-    def _target(self) -> Any:
+    def _agent(self, agent_id: str) -> Any:
         try:
-            return async_get_agent(self.hass, self._target_agent)
+            return async_get_agent(self.hass, agent_id)
         except Exception:  # noqa: BLE001
             return None
+
+    def _target(self) -> Any:
+        return self._agent(self._target_agent)
 
     @property
     def supports_streaming(self) -> bool:
@@ -259,27 +327,68 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
     # Requests -------------------------------------------------------------------------
 
-    async def _forward(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
-        result = await conversation.async_converse(
-            self.hass,
-            user_input.text,
-            user_input.conversation_id,
-            user_input.context,
-            user_input.language,
-            self._target_agent,
-            user_input.device_id,
-            user_input.satellite_id,
-            user_input.extra_system_prompt,
-        )
+    async def _call_agent(
+        self, agent_id: str, user_input: conversation.ConversationInput
+    ) -> tuple[conversation.ConversationResult | None, str | None]:
+        """Ask one agent. Returns (result, None), or (None, why it failed)."""
+        if self._agent(agent_id) is None:
+            return None, "not found"
+        try:
+            async with asyncio.timeout(self._agent_timeout):
+                result = await conversation.async_converse(
+                    self.hass,
+                    user_input.text,
+                    user_input.conversation_id,
+                    user_input.context,
+                    user_input.language,
+                    agent_id,
+                    user_input.device_id,
+                    user_input.satellite_id,
+                    user_input.extra_system_prompt,
+                )
+        except TimeoutError:
+            return None, "timed out"
+        except Exception as err:  # noqa: BLE001
+            return None, repr(err)[:200]
+        response = result.response
+        if (
+            response.response_type == intent.IntentResponseType.ERROR
+            and response.error_code == intent.IntentResponseErrorCode.UNKNOWN
+        ):
+            # How LLM agents such as MCP Assist report a server failure. Other error codes
+            # ("no device called that") are real answers and are passed on as they are.
+            return None, f"error response: {_speech(result)[:150]}"
+        return result, None
+
+    async def _forward(
+        self, user_input: conversation.ConversationInput
+    ) -> tuple[conversation.ConversationResult, dict[str, Any]]:
+        """Hand the request to the target agent, then the backup; never fail silently."""
+        info: dict[str, Any] = {}
+        result, err = await self._call_agent(self._target_agent, user_input)
+        if err is None:
+            info["answered_by"] = self._target_agent
+        else:
+            info["agent_error"] = err
+            if self._backup_agent and self._backup_agent != self._target_agent:
+                result, backup_err = await self._call_agent(self._backup_agent, user_input)
+                if backup_err is None:
+                    info["answered_by"] = self._backup_agent
+                else:
+                    info["backup_error"] = backup_err
+            if result is None:
+                result = _unavailable(user_input, self._names[0])
+                info["answered_by"] = None
+        self._agent_health(err, info)
         if user_input.device_id:
             self._last_reply[user_input.device_id] = (time.monotonic(), _speech(result))
-        return result
+        return result, info
 
     async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         if not self._is_speech_run(user_input.device_id):
-            result = await self._forward(user_input)
+            result, info = await self._forward(user_input)
             self._log({"kind": "passthrough", "device_id": user_input.device_id, "text": user_input.text,
-                       "reply": _speech(result)[:300]})
+                       **info, "reply": _speech(result)[:300]})
             return result
 
         rec = await self._assess(user_input)
@@ -289,7 +398,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
 
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
-        result = await self._forward(user_input)
+        result, info = await self._forward(user_input)
+        rec.update(info)
         rec["reply"] = _speech(result)[:300]
         rec["agent_ms"] = round((time.monotonic() - start) * 1000)
         if result.continue_conversation:
@@ -299,6 +409,78 @@ class SmartListeningAgent(conversation.ConversationEntity):
             result = dataclasses.replace(result, continue_conversation=False)
         self._log(rec)
         return result
+
+    # Health: warnings and repair issues -----------------------------------------------
+
+    def _agent_name(self, agent_id: str) -> str:
+        state = self.hass.states.get(agent_id)
+        return (state.attributes.get("friendly_name") if state else None) or agent_id
+
+    def _agent_health(self, err: str | None, info: dict[str, Any]) -> None:
+        if err is None:
+            if self._agent_failures:
+                _LOGGER.info("Smart Listening %s: %s is answering again", self._title, self._target_agent)
+            self._agent_failures = 0
+            if self._agent_issue:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id("agent", self._entry_id))
+                self._agent_issue = False
+            return
+        self._agent_failures += 1
+        if self._agent_failures == 1:
+            answered = info.get("answered_by")
+            _LOGGER.warning(
+                "Smart Listening %s: %s failed (%s); %s",
+                self._title,
+                self._target_agent,
+                err,
+                f"answered by the backup {answered}" if answered else f"replied that {self._names[0]} isn't available",
+            )
+        if not self._agent_issue and (err == "not found" or self._agent_failures >= AGENT_ISSUE_AFTER):
+            self._raise_agent_issue()
+
+    def _raise_agent_issue(self) -> None:
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id("agent", self._entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="agent_unavailable",
+            translation_placeholders={"assistant": self._title, "agent": self._agent_name(self._target_agent)},
+        )
+        self._agent_issue = True
+
+    def _classifier_health(self, rec: dict[str, Any]) -> None:
+        results = [r for r in (rec.get("address"), rec.get("followup")) if r]
+        if not results:
+            return
+        errors = [r["error"] for r in results if "error" in r]
+        if not errors:
+            if self._classifier_failures:
+                _LOGGER.info("Smart Listening %s: the classifier is answering again", self._title)
+            self._classifier_failures = 0
+            if self._classifier_issue:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id("classifier", self._entry_id))
+                self._classifier_issue = False
+            return
+        self._classifier_failures += 1
+        if self._classifier_failures == 1:
+            _LOGGER.warning(
+                "Smart Listening %s: the classifier failed (%s); judging by the name position until it answers",
+                self._title,
+                errors[0],
+            )
+        if not self._classifier_issue and self._classifier_failures >= CLASSIFIER_ISSUE_AFTER:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id("classifier", self._entry_id),
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="classifier_unavailable",
+                translation_placeholders={"assistant": self._title},
+            )
+            self._classifier_issue = True
 
     async def _assess(self, user_input: conversation.ConversationInput) -> dict[str, Any]:
         text = user_input.text.strip()
@@ -340,6 +522,7 @@ class SmartListeningAgent(conversation.ConversationEntity):
             rec["address"] = await self._classifier.address(text, self._assistant)
         if in_followup:
             rec["followup"] = await self._classifier.followup(prev[1], text, self._assistant)
+        self._classifier_health(rec)
 
         yes = (rec.get("address") or {}).get("p", 0.0)
         fup = (rec.get("followup") or {}).get("p", 0.0)

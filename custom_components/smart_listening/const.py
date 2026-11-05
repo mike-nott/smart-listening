@@ -6,6 +6,10 @@ DOMAIN = "smart_listening"
 
 # Config entry options
 CONF_TARGET_AGENT = "target_agent"
+# Tried when the target agent is missing, raises, times out or reports a server failure.
+CONF_BACKUP_AGENT = "backup_agent"
+# Seconds an agent may take before it counts as failed.
+CONF_AGENT_TIMEOUT = "agent_timeout"
 CONF_NAMES = "assistant_names"
 CONF_CLASSIFIER = "classifier"
 CONF_CLASSIFIER_URL = "classifier_url"
@@ -60,6 +64,8 @@ CLASSIFIER_DEFAULTS = {
 }
 
 DEFAULTS = {
+    CONF_BACKUP_AGENT: "",
+    CONF_AGENT_TIMEOUT: 60,
     CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
     CONF_CLASSIFIER_URL: "",
     CONF_CLASSIFIER_MODEL: "",
@@ -79,6 +85,14 @@ DEFAULTS = {
 }
 
 CLASSIFIER_TIMEOUT = 30
+
+# Spoken when neither the target agent nor the backup could answer an accepted request.
+UNAVAILABLE_MESSAGE = "Sorry, {name} isn't available right now."
+# Consecutive failures before a repair issue appears (a missing agent raises one at once).
+AGENT_ISSUE_AFTER = 3
+CLASSIFIER_ISSUE_AFTER = 3
+# After Home Assistant starts, check that the target agent exists (agents load late).
+STARTUP_CHECK_DELAY = 120
 
 # Entities from the Voice PE firmware package, matched on the end of their unique id
 # ("<mac>/0/<platform>/<entity name>"), so renamed entity ids keep working.

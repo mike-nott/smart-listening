@@ -49,6 +49,8 @@
         "title": "Smart Listening settings",
         "data": {
           "target_agent": "Conversation agent",
+          "backup_agent": "Backup conversation agent",
+          "agent_timeout": "Agent timeout",
           "assistant_names": "Assistant names",
           "classifier": "Classifier",
           "classifier_url": "Classifier URL",
@@ -62,6 +64,9 @@
           "cloudflare_account_id": "Cloudflare account ID"
         },
         "data_description": {
+          "target_agent": "The agent that answers accepted requests.",
+          "backup_agent": "Optional. Answers when the main agent is missing, fails, times out or reports a server error. Leave empty to say that the assistant isn't available instead.",
+          "agent_timeout": "How long an agent may take to answer before it counts as failed.",
           "address_threshold": "How sure the classifier must be that speech containing the name is a request. Higher means fewer false replies and more missed requests.",
           "wake_word_threshold": "Used instead when the device's wake word model also heard the name.",
           "followup_threshold": "How sure the classifier must be that speech after a reply, without the name, continues the conversation.",
@@ -79,7 +84,8 @@
       "target_is_self": "Choose a different agent: a Smart Listening agent cannot pass requests to itself.",
       "no_api_key": "Enter the API key.",
       "no_account": "Enter your Cloudflare account ID.",
-      "invalid_clef_model": "Enter clef or clef-flash."
+      "invalid_clef_model": "Enter clef or clef-flash.",
+      "backup_is_self": "Choose a different agent: a Smart Listening agent cannot be its own backup."
     }
   },
   "selector": {
@@ -91,6 +97,16 @@
         "openai": "OpenAI-compatible endpoint (Ollama, vLLM, LM Studio or a cloud API)",
         "name_only": "Name only (no classifier: answer when the name is among the first words)"
       }
+    }
+  },
+  "issues": {
+    "agent_unavailable": {
+      "title": "{assistant}: {agent} isn't answering",
+      "description": "Smart Listening could not reach {agent}, the conversation agent for {assistant}. It may be missing, failing or timing out.\n\nUntil it answers, accepted requests go to the backup conversation agent if one is set in the Smart Listening options. Otherwise the assistant says it isn't available.\n\nThis message goes away by itself the next time {agent} answers. The decision log and the Home Assistant log show the error."
+    },
+    "classifier_unavailable": {
+      "title": "{assistant}: the Smart Listening classifier isn't answering",
+      "description": "The classifier that decides which speech is meant for {assistant} has failed several times in a row.\n\nUntil it answers, speech is answered only when the assistant's name is among its first few words, and follow-ups without the name are not answered.\n\nCheck that the classifier server is running and reachable. This message goes away by itself the next time the classifier answers."
     }
   }
 }

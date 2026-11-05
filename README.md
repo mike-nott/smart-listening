@@ -17,6 +17,8 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Choice of Classifier**: Clef (self-hosted or on Cloudflare), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
 - ✅ **Several Assistants**: One config entry per assistant, each with its own names and conversation agent
 - ✅ **Per-Device Off Switch**: Turn Smart Listening off on any Voice PE to get the stock wake word behaviour back
+- ✅ **Backup Agent**: If the main conversation agent is down, requests go to a backup; failing that, the assistant says it isn't available instead of staying silent
+- ✅ **Visible Failures**: An agent or classifier that stops answering shows under Settings → Repairs until it recovers
 - ✅ **Decision Log**: Optional log of every decision, with scores, for tuning
 
 ## The Problem Smart Listening Solves
@@ -135,6 +137,8 @@ Open **Smart Listening → Configure** on the agent to change any setting. Chang
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Conversation agent | | The agent that answers accepted requests |
+| Backup conversation agent | None | Answers when the main agent is missing, fails, times out or reports a server error |
+| Agent timeout | 60 s | How long an agent may take to answer before it counts as failed |
 | Assistant names | | Names the assistant answers to, comma separated |
 | Classifier | Clef | How speech containing the name is judged |
 | Request threshold | Clef 0.5, Jev 0.7, others 0.8 | How sure the classifier must be that speech containing the name is a request |
@@ -188,6 +192,19 @@ On follow-ups, Jev accepted all 7 genuine follow-ups and none of the 5 unrelated
 
 Turn on the decision log while tuning. Each line holds the transcript, the name match, the classifier's scores and the decision.
 
+### When the conversation agent is down
+
+If the agent that answers requests can't be reached, Smart Listening does not leave you in silence:
+
+1. **The backup agent answers**, if one is set. Use one that does not depend on the same server, for example a local model if your main agent is in the cloud.
+2. **Otherwise the assistant says** "Sorry, Nova isn't available right now."
+
+An agent counts as failed when it is missing (for example, its integration has not loaded), raises an error, takes longer than the agent timeout, or replies with an `unknown` error, which is how LLM agents such as MCP Assist report a server failure. Other errors, such as "there is no device called that", are real answers: they are spoken as they are, and the request is not sent again.
+
+While the main agent keeps failing, **Settings → Repairs** shows "Nova: \<agent\> isn't answering", and Home Assistant's log has one warning. Both clear themselves the next time the agent answers. The same happens when the classifier stops answering: speech is judged by the name position until it recovers.
+
+The decision log records which agent answered (`answered_by`) and why the others failed (`agent_error`, `backup_error`).
+
 ## Privacy
 
 Smart Listening changes what your Voice PEs send off the device:
@@ -202,6 +219,9 @@ Smart Listening changes what your Voice PEs send off the device:
 - Is the **Smart Listening** switch on? It turns off after every firmware install
 - Is the device's **Assistant** set to the pipeline that uses the Smart Listening agent? If the pipeline was renamed, re-select it
 - Turn on the decision log and speak. No new line means the request never reached Smart Listening (check the pipeline); a line with `"answer": false` shows how it was judged
+
+### The assistant says it isn't available
+The main agent and the backup (if any) both failed. Check **Settings → Repairs**, and the `agent_error` and `backup_error` fields in the decision log. A missing agent usually means its integration failed to load: for MCP Assist, check that the server it connects to is running.
 
 ### The name is missing from transcripts
 Speech detection can clip the first word, so "Nova, what time is it?" arrives as "what time is it?". Use a wake word model for the name: it then supplies the name as a hint. If your speech-to-text engine misspells the name in the same way each time, add the misspelling as an extra name.

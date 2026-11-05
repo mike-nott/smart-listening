@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
 
@@ -33,3 +34,9 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Smart Listening agent."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """A deleted agent leaves no repair issues behind."""
+    for kind in ("agent", "classifier"):
+        ir.async_delete_issue(hass, DOMAIN, f"{kind}_unavailable_{entry.entry_id}")

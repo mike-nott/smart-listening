@@ -27,6 +27,8 @@ from .const import (
     CLEF_CLOUD_MODELS,
     CLEF_CLOUD_URL,
     CONF_ADDRESS_THRESHOLD,
+    CONF_AGENT_TIMEOUT,
+    CONF_BACKUP_AGENT,
     CONF_CLASSIFIER,
     CONF_CLASSIFIER_ACCOUNT,
     CONF_CLASSIFIER_API_KEY,
@@ -63,6 +65,11 @@ _SECONDS = selector.NumberSelector(
         min=0, max=120, step=1, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX
     )
 )
+_TIMEOUT = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=5, max=300, step=1, unit_of_measurement="s", mode=selector.NumberSelectorMode.BOX
+    )
+)
 _BOOL = selector.BooleanSelector()
 
 
@@ -71,6 +78,14 @@ def _validate_basics(data: dict[str, Any], errors: dict[str, str]) -> None:
         errors[CONF_NAMES] = "no_names"
     if data.get(CONF_TARGET_AGENT, "").startswith("conversation.smart_listening"):
         errors[CONF_TARGET_AGENT] = "target_is_self"
+    if (data.get(CONF_BACKUP_AGENT) or "").startswith("conversation.smart_listening"):
+        errors[CONF_BACKUP_AGENT] = "backup_is_self"
+
+
+def _clear_omitted(user_input: dict[str, Any], candidate: dict[str, Any]) -> None:
+    """An optional field left empty is left out of the form's data: clear it."""
+    if CONF_BACKUP_AGENT not in user_input:
+        candidate[CONF_BACKUP_AGENT] = ""
 
 
 async def _validate_classifier(hass, data: dict[str, Any], errors: dict[str, str]) -> None:
@@ -229,6 +244,7 @@ class SmartListeningOptionsFlow(OptionsFlow):
         current = {**DEFAULTS, **self.config_entry.options}
         if user_input is not None:
             candidate = {**current, **user_input}
+            _clear_omitted(user_input, candidate)
             _switch_classifier(current, candidate)
             _validate_basics(candidate, errors)
             if not errors:
@@ -242,6 +258,8 @@ class SmartListeningOptionsFlow(OptionsFlow):
                 vol.Schema(
                     {
                         vol.Required(CONF_TARGET_AGENT): _AGENT,
+                        vol.Optional(CONF_BACKUP_AGENT): _AGENT,
+                        vol.Required(CONF_AGENT_TIMEOUT): _TIMEOUT,
                         vol.Required(CONF_NAMES): _TEXT,
                         vol.Required(CONF_CLASSIFIER): _CLASSIFIER,
                         vol.Optional(CONF_CLASSIFIER_URL): _URL,
@@ -255,7 +273,7 @@ class SmartListeningOptionsFlow(OptionsFlow):
                         vol.Required(CONF_DECISION_LOG): _BOOL,
                     }
                 ),
-                user_input or current,
+                user_input or {k: v for k, v in current.items() if not (k == CONF_BACKUP_AGENT and not v)},
             ),
             errors=errors,
         )

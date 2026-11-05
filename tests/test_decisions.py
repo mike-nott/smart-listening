@@ -417,3 +417,213 @@ def test_agent_named_like_mcp_assist():
     info = agent.device_info
     assert info["name"] == "Smart Listening - Nova" and info["manufacturer"] == "Smart Listening"
     assert info["model"] == "Clef" and ("smart_listening", "e1") in info["identifiers"]
+
+
+# Failure handling (0.3.0) ------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from homeassistant.helpers import intent as ha_intent  # noqa: E402
+
+from custom_components.smart_listening import conversation as slc  # noqa: E402
+
+
+def _reply(text, error_code=None):
+    response = ha_intent.IntentResponse(language="en")
+    if error_code is None:
+        response.async_set_speech(text)
+    else:
+        response.async_set_error(error_code, text)
+    return slc.conversation.ConversationResult(response=response, conversation_id="c1", continue_conversation=False)
+
+
+class Harness:
+    """A Smart Listening agent with fake agents, a fake issue registry and a captured log."""
+
+    def __init__(self, monkeypatch, agents, backup="conversation.backup", timeout=1.0, speech_run=False):
+        self.agents = agents  # agent id -> callable(text) returning a result, raising, or "missing"
+        self.calls: list[str] = []
+        self.issues: dict[str, dict] = {}
+        self.logged: list[dict] = []
+        self.warnings: list[str] = []
+        entry = SimpleNamespace(
+            entry_id="e1",
+            title="Nova",
+            data={},
+            options={
+                CONF_TARGET_AGENT: "conversation.main",
+                CONF_NAMES: "Nova, Alexa",
+                CONF_CLASSIFIER: CLASSIFIER_NAME_ONLY,
+                "backup_agent": backup,
+                "agent_timeout": timeout,
+            },
+        )
+        self.agent = SmartListeningAgent(entry)
+        self.agent.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: None))
+        self.agent._log = self.logged.append
+        self.agent._is_speech_run = lambda device_id: speech_run
+        self.agent._show_thinking = lambda device_id: None
+        self.agent._wake_hint = lambda device_id: None
+
+        def get_agent(hass, agent_id):
+            return None if self.agents.get(agent_id) == "missing" else object()
+
+        async def converse(hass, text, conversation_id, context, language, agent_id, *rest):
+            self.calls.append(agent_id)
+            return await self.agents[agent_id](text)
+
+        monkeypatch.setattr(slc, "async_get_agent", get_agent)
+        monkeypatch.setattr(slc.conversation, "async_converse", converse)
+        monkeypatch.setattr(slc.ir, "async_create_issue", lambda hass, domain, issue_id, **kw: self.issues.__setitem__(issue_id, kw))
+        monkeypatch.setattr(slc.ir, "async_delete_issue", lambda hass, domain, issue_id: self.issues.pop(issue_id, None))
+        monkeypatch.setattr(slc._LOGGER, "warning", lambda msg, *a: self.warnings.append(msg % a))
+
+    async def ask(self, text="Nova, what time is it?"):
+        user_input = SimpleNamespace(
+            text=text, device_id="dev", conversation_id="c1", context=None, language="en",
+            satellite_id=None, extra_system_prompt=None,
+        )
+        result = await self.agent.async_process(user_input)
+        return result, self.logged[-1]
+
+
+async def _ok(text):
+    return _reply("It is noon.")
+
+
+async def _boom(text):
+    raise RuntimeError("gateway down")
+
+
+async def _slow(text):
+    await asyncio.sleep(5)
+
+
+async def _server_error(text):
+    return _reply("Could not reach the server.", ha_intent.IntentResponseErrorCode.UNKNOWN)
+
+
+async def _no_device(text):
+    return _reply("There is no device called that.", ha_intent.IntentResponseErrorCode.NO_VALID_TARGETS)
+
+
+def _spoken(result):
+    return result.response.speech["plain"]["speech"]
+
+
+@pytest.mark.asyncio
+async def test_target_answers(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _ok, "conversation.backup": _ok})
+    result, rec = await h.ask()
+    assert _spoken(result) == "It is noon." and h.calls == ["conversation.main"]
+    assert rec["answered_by"] == "conversation.main" and "agent_error" not in rec
+    assert h.issues == {} and h.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_missing_target_goes_to_backup_and_raises_issue_at_once(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": "missing", "conversation.backup": _ok})
+    result, rec = await h.ask()
+    assert _spoken(result) == "It is noon." and h.calls == ["conversation.backup"]
+    assert rec["agent_error"] == "not found" and rec["answered_by"] == "conversation.backup"
+    issue = h.issues["agent_unavailable_e1"]
+    assert issue["translation_key"] == "agent_unavailable"
+    assert issue["translation_placeholders"] == {"assistant": "Nova", "agent": "conversation.main"}
+    assert len(h.warnings) == 1 and "answered by the backup conversation.backup" in h.warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_raising_target_goes_to_backup(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _boom, "conversation.backup": _ok})
+    result, rec = await h.ask()
+    assert _spoken(result) == "It is noon." and "gateway down" in rec["agent_error"]
+    assert h.issues == {}  # one failure is not enough for a repair issue
+
+
+@pytest.mark.asyncio
+async def test_server_error_goes_to_backup_but_real_answers_do_not(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _server_error, "conversation.backup": _ok})
+    result, rec = await h.ask()
+    assert _spoken(result) == "It is noon." and rec["agent_error"].startswith("error response:")
+
+    h = Harness(monkeypatch, {"conversation.main": _no_device, "conversation.backup": _ok})
+    result, rec = await h.ask()
+    assert _spoken(result) == "There is no device called that." and h.calls == ["conversation.main"]
+    assert rec["answered_by"] == "conversation.main"
+
+
+@pytest.mark.asyncio
+async def test_timeout_goes_to_backup(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _slow, "conversation.backup": _ok}, timeout=0.01)
+    result, rec = await h.ask()
+    assert rec["agent_error"] == "timed out" and _spoken(result) == "It is noon."
+
+
+@pytest.mark.asyncio
+async def test_no_agent_answers_says_unavailable(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _boom, "conversation.backup": "missing"})
+    result, rec = await h.ask()
+    assert _spoken(result) == "Sorry, Nova isn't available right now."
+    assert result.response.response_type == ha_intent.IntentResponseType.ERROR
+    assert rec["answered_by"] is None and rec["backup_error"] == "not found"
+    assert "replied that Nova isn't available" in h.warnings[0]
+
+    h = Harness(monkeypatch, {"conversation.main": _boom}, backup="")
+    result, rec = await h.ask()
+    assert _spoken(result) == "Sorry, Nova isn't available right now." and h.calls == ["conversation.main"]
+
+
+@pytest.mark.asyncio
+async def test_issue_after_repeated_failures_and_cleared_on_recovery(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _boom, "conversation.backup": _ok})
+    for _ in range(3):
+        await h.ask()
+    assert "agent_unavailable_e1" in h.issues and len(h.warnings) == 1  # warned once, not per request
+    h.agents["conversation.main"] = _ok
+    _, rec = await h.ask()
+    assert rec["answered_by"] == "conversation.main" and h.issues == {}
+    h.agents["conversation.main"] = _boom
+    await h.ask()
+    assert len(h.warnings) == 2  # a new outage warns again
+
+
+@pytest.mark.asyncio
+async def test_accepted_speech_is_logged_when_the_agent_fails(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": "missing", "conversation.backup": "missing"}, speech_run=True)
+    result, rec = await h.ask("Nova, what time is it?")
+    assert rec["kind"] == "speech" and rec["answer"] is True
+    assert rec["agent_error"] == "not found" and rec["backup_error"] == "not found"
+    assert rec["reply"] == "Sorry, Nova isn't available right now."
+
+
+def test_options_clear_an_emptied_backup():
+    from custom_components.smart_listening.config_flow import _clear_omitted, _validate_basics
+
+    candidate = {"backup_agent": "conversation.backup"}
+    _clear_omitted({"target_agent": "conversation.main"}, candidate)
+    assert candidate["backup_agent"] == ""
+    candidate = {"backup_agent": "conversation.new"}
+    _clear_omitted({"backup_agent": "conversation.new"}, candidate)
+    assert candidate["backup_agent"] == "conversation.new"
+    errors = {}
+    _validate_basics({"assistant_names": "Nova", "target_agent": "conversation.main",
+                      "backup_agent": "conversation.smart_listening_nova"}, errors)
+    assert errors == {"backup_agent": "backup_is_self"}
+
+
+@pytest.mark.asyncio
+async def test_classifier_issue_after_three_errors_and_cleared(monkeypatch):
+    issues = {}
+    monkeypatch.setattr(slc.ir, "async_create_issue", lambda hass, domain, issue_id, **kw: issues.__setitem__(issue_id, kw))
+    monkeypatch.setattr(slc.ir, "async_delete_issue", lambda hass, domain, issue_id: issues.pop(issue_id, None))
+    agent = make_agent(FakeClassifier(error=True))
+    agent.hass = None
+    for _ in range(2):
+        r = await decide(agent, "Nova, what time is it?")
+        assert r["reason"] == "classifier failed, name position"
+    assert issues == {}
+    await decide(agent, "Nova, what time is it?")
+    assert issues["classifier_unavailable_e1"]["translation_key"] == "classifier_unavailable"
+    agent._classifier = FakeClassifier(address=0.9)
+    await decide(agent, "Nova, what time is it?")
+    assert issues == {}
