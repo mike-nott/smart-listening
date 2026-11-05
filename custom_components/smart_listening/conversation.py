@@ -161,11 +161,14 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._agent_timeout = float(opts[CONF_AGENT_TIMEOUT])
         self._entry_id = entry.entry_id
         self._title = entry.title
-        # Consecutive failures, and whether a repair issue is showing.
+        # Consecutive failures, and whether this agent raised a repair issue. An issue can
+        # also be left from before a reload or restart, so the first success clears it.
         self._agent_failures = 0
         self._agent_issue = False
+        self._agent_cleared = False
         self._classifier_failures = 0
         self._classifier_issue = False
+        self._classifier_cleared = False
         self._cancel_startup_check = None
         self._names = parse_names(opts[CONF_NAMES])
         first, others = self._names[0], self._names[1:]
@@ -421,9 +424,10 @@ class SmartListeningAgent(conversation.ConversationEntity):
             if self._agent_failures:
                 _LOGGER.info("Smart Listening %s: %s is answering again", self._title, self._target_agent)
             self._agent_failures = 0
-            if self._agent_issue:
+            if self._agent_issue or not self._agent_cleared:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id("agent", self._entry_id))
                 self._agent_issue = False
+                self._agent_cleared = True
             return
         self._agent_failures += 1
         if self._agent_failures == 1:
@@ -459,9 +463,10 @@ class SmartListeningAgent(conversation.ConversationEntity):
             if self._classifier_failures:
                 _LOGGER.info("Smart Listening %s: the classifier is answering again", self._title)
             self._classifier_failures = 0
-            if self._classifier_issue:
+            if self._classifier_issue or not self._classifier_cleared:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id("classifier", self._entry_id))
                 self._classifier_issue = False
+                self._classifier_cleared = True
             return
         self._classifier_failures += 1
         if self._classifier_failures == 1:

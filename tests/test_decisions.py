@@ -56,6 +56,7 @@ def make_agent(classifier=None, hint=None, kind=CLASSIFIER_CLEF, last_reply=None
     agent = SmartListeningAgent(entry)
     agent._classifier = classifier
     agent._wake_hint = lambda device_id: hint
+    agent._classifier_cleared = True  # decision tests run without a hass; no leftover issue to clear
     if last_reply is not None:
         agent._last_reply["dev"] = (time.monotonic() - last_reply[0], last_reply[1])
     return agent
@@ -627,3 +628,22 @@ async def test_classifier_issue_after_three_errors_and_cleared(monkeypatch):
     agent._classifier = FakeClassifier(address=0.9)
     await decide(agent, "Nova, what time is it?")
     assert issues == {}
+
+
+@pytest.mark.asyncio
+async def test_leftover_issue_from_before_a_reload_is_cleared(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": _ok})
+    h.issues["agent_unavailable_e1"] = {"translation_key": "agent_unavailable"}  # raised before a reload
+    await h.ask()
+    assert h.issues == {}
+    h.issues["agent_unavailable_e1"] = {"translation_key": "agent_unavailable"}
+    h.agents["conversation.main"] = "missing"
+    await h.ask()  # a new failure after the reload raises it again
+    assert "agent_unavailable_e1" in h.issues
+
+
+@pytest.mark.asyncio
+async def test_failure_straight_after_startup_raises_issue(monkeypatch):
+    h = Harness(monkeypatch, {"conversation.main": "missing"}, backup="")
+    await h.ask()
+    assert "agent_unavailable_e1" in h.issues
