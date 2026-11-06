@@ -138,6 +138,10 @@ NAME_ONLY_POSITION = 3
 ECHO_SIMILARITY = 0.6
 # The greeting heard back at the start of the request after it ("Hi, how can I help?").
 GREETING_ECHO_SIMILARITY = 0.75
+# A speech run that ends without a transcript greets only if the wake word model heard
+# the name this soon after the run started (the name opened the speech). A name heard
+# later in a conversation is someone talking, or a false wake.
+NAME_START_WINDOW = 1.5
 # Only speech this soon after the reply can be its echo (replies on a speaker can be long).
 ECHO_WINDOW = 60
 # Open-mic follow-ups: when the agent asks to keep listening, Home Assistant reopens the

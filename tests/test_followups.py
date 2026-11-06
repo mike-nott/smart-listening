@@ -295,3 +295,33 @@ async def test_name_pause_is_pushed_to_voice_pes(monkeypatch, value, state, uses
         await t
     expected = [("number", "set_value", {"entity_id": "number.lr_name_pause", "value": 500})] if pushed else []
     assert services.calls == expected
+
+
+def _ended_run(monkeypatch, hint_after, handled=False):
+    room = Room(monkeypatch)
+    a = room.agent
+    import datetime as _dt
+    start = _dt.datetime(2026, 11, 6, 8, 0, 50, tzinfo=_dt.timezone.utc)
+    hint = SimpleNamespace(state="Alexa", last_changed=start + _dt.timedelta(seconds=hint_after))
+    a.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: hint if e == "text_sensor.hint" else None))
+    ent = SimpleNamespace(platform="esphome", unique_id="x" + slc.DEVICE_RUN, device_id="dev")
+    monkeypatch.setattr(slc.er, "async_get", lambda hass: SimpleNamespace(async_get=lambda e: ent))
+    a._device_entity = lambda d, suffix: "text_sensor.hint"
+    a._names = ["Lorelai", "Alexa"]
+    if handled:
+        a._last_process["dev"] = start + _dt.timedelta(seconds=1)
+    summoned = []
+    a._summon = lambda d, why: summoned.append((d, why))
+    event = SimpleNamespace(data={"entity_id": "binary_sensor.run", "old_state": SimpleNamespace(last_changed=start)})
+    a._on_run_ended(event)
+    return summoned
+
+
+@pytest.mark.parametrize(("hint_after", "handled", "greets"), [
+    (0.3, False, True),    # "Alexa" on its own
+    (3.3, False, False),   # "Alexa" heard 3 s into someone talking
+    (0.3, True, False),    # Smart Listening judged the run
+])
+def test_run_ended_greets_only_when_the_name_opened_the_speech(monkeypatch, hint_after, handled, greets):
+    summoned = _ended_run(monkeypatch, hint_after, handled)
+    assert summoned == ([("dev", "wake word, no speech")] if greets else [])

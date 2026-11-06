@@ -84,6 +84,7 @@ from .const import (
     DOMAIN,
     ECHO_SIMILARITY,
     GREETING_ECHO_SIMILARITY,
+    NAME_START_WINDOW,
     ECHO_WINDOW,
     OPEN_MIC_GAP,
     OPEN_MIC_WINDOW,
@@ -612,8 +613,13 @@ class SmartListeningAgent(conversation.ConversationEntity):
         hint_entity = self._device_entity(device_id, DEVICE_WAKE_WORD)
         hint = self.hass.states.get(hint_entity) if hint_entity else None
         heard = (hint.state if hint else "").strip().lower()
-        if heard and any(name.lower() in heard for name in self._names):
-            self._summon(device_id, "wake word, no speech")
+        if not heard or not any(name.lower() in heard for name in self._names):
+            return
+        after = (hint.last_changed - started).total_seconds()
+        if after > NAME_START_WINDOW:
+            _LOGGER.debug("Smart Listening %s: name heard %.1f s into the run, not greeting", self._title, after)
+            return
+        self._summon(device_id, "wake word, no speech")
 
     def _summon(self, device_id: str, reason: str) -> None:
         """Say "Hi, how can I help?" from the speaker replies come from, then listen."""
