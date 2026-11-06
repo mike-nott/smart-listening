@@ -371,7 +371,12 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self.async_on_remove(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, _name_pause_changed, event_filter=_is_name_pause)
         )
-        self.async_on_remove(async_at_started(self.hass, lambda _h: self._push_name_pause()))
+
+        @callback
+        def _push_at_start(_hass: HomeAssistant) -> None:
+            self._push_name_pause()
+
+        self.async_on_remove(async_at_started(self.hass, _push_at_start))
         self.async_on_remove(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, _record_reply_end, event_filter=_left_responding)
         )
