@@ -230,6 +230,24 @@ While the main agent keeps failing, **Settings → Repairs** shows "Nova: \<agen
 
 The decision log records which agent answered (`answered_by`) and why the others failed (`agent_error`, `backup_error`).
 
+### Late replies (for agents)
+
+Some agents answer at once ("On it.") and send the result later. Send that later answer through the `smart_listening.reply` action instead of an announcement, so it plays where the room's replies play: from the Voice PE, or from the room speaker set in **Room speaker script**. Afterwards the Voice PE listens, and what it hears is judged as a follow-up.
+
+```yaml
+action: smart_listening.reply
+data:
+  area: Kitchen          # the room the request came from
+  message: "Your Spirit Energy quote arrived this morning."
+```
+
+- **`area`** picks the Voice PE in that room that uses Smart Listening. **`satellite`** picks one directly. With neither, the reply goes to the Voice PE that most recently sent a request (within 30 minutes).
+- **`listen: false`** plays the reply without listening afterwards.
+- If no Voice PE matches, the action fails, so the agent can fall back to an announcement.
+- If a reply is still playing on the Voice PE, the late reply waits for it to finish (up to 30 seconds).
+
+Keep announcements (Smart Announcements, doorbells, automations) for anything that isn't a reply to someone who just spoke.
+
 ## Privacy
 
 Smart Listening changes what your Voice PEs send off the device:

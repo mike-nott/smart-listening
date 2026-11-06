@@ -235,7 +235,7 @@ def _greeter(monkeypatch, replies_switch, script):
     a._reply_script = "script.room" if script else ""
     a._device_entity = lambda d, suffix: "switch.replies" if replies_switch else None
     a._esphome_name = lambda sat: "home-assistant-voice-kitchen"
-    a._greeting_url = lambda sat: "http://ha:8123/api/tts_proxy/abc.mp3"
+    a._tts_url = lambda sat, msg: "http://ha:8123/api/tts_proxy/abc.mp3"
     monkeypatch.setattr(slc.er, "async_get", lambda hass: None)
     monkeypatch.setattr(slc.er, "async_entries_for_device", lambda reg, d: [
         SimpleNamespace(entity_id="media_player.vpe", domain="media_player", platform="esphome")])

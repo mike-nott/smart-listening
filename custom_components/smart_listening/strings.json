@@ -118,5 +118,33 @@
       "title": "{assistant}: the Smart Listening classifier isn't answering",
       "description": "The classifier that decides which speech is meant for {assistant} has failed several times in a row.\n\nUntil it answers, speech is answered only when the assistant's name is among its first few words, and follow-ups without the name are not answered.\n\nCheck that the classifier server is running and reachable. This message goes away by itself the next time the classifier answers."
     }
+  },
+  "services": {
+    "reply": {
+      "name": "Reply",
+      "description": "Say a late answer to a voice request from the speaker that room's replies come from (the Voice PE, or the room speaker set in Smart Listening), then keep listening. For agents that answer \"On it.\" and send the result later. Use announcements for anything that is not a reply.",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "What to say."
+        },
+        "area": {
+          "name": "Area",
+          "description": "The room the request came from (area name or ID). Its Voice PE that uses Smart Listening says the reply."
+        },
+        "satellite": {
+          "name": "Voice PE",
+          "description": "The Voice PE to reply on, instead of an area."
+        },
+        "listen": {
+          "name": "Listen afterwards",
+          "description": "Keep listening after the reply, so the person can answer. Defaults to the agent's \"Keep listening after every answer\" setting."
+        },
+        "agent": {
+          "name": "Agent",
+          "description": "The Smart Listening agent, if you have more than one. Without an area or Voice PE, the reply goes to the Voice PE that most recently sent a request (within 30 minutes)."
+        }
+      }
+    }
   }
 }

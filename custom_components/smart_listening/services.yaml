@@ -1,0 +1,28 @@
+reply:
+  fields:
+    message:
+      required: true
+      example: "Your Spirit Energy quote arrived this morning: 1,240 pounds a year."
+      selector:
+        text:
+          multiline: true
+    area:
+      required: false
+      example: "Kitchen"
+      selector:
+        text:
+    satellite:
+      required: false
+      selector:
+        entity:
+          domain: assist_satellite
+    listen:
+      required: false
+      selector:
+        boolean:
+    agent:
+      required: false
+      selector:
+        entity:
+          domain: conversation
+          integration: smart_listening

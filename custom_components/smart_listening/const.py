@@ -142,6 +142,14 @@ GREETING_ECHO_SIMILARITY = 0.75
 # the name this soon after the run started (the name opened the speech). A name heard
 # later in a conversation is someone talking, or a false wake.
 NAME_START_WINDOW = 1.5
+
+# smart_listening.reply: a late reply from an agent ("On it." now, the result later),
+# played where the room's replies play and not through announcements.
+SERVICE_REPLY = "reply"
+# With no area or satellite, the Voice PE this agent last handled a request from, if this recent (s).
+REPLY_RECENT = 1800
+# Wait this long (s) for a reply still playing on the Voice PE to finish.
+REPLY_WAIT = 30
 # Only speech this soon after the reply can be its echo (replies on a speaker can be long).
 ECHO_WINDOW = 60
 # Open-mic follow-ups: when the agent asks to keep listening, Home Assistant reopens the

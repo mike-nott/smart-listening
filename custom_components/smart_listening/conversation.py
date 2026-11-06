@@ -32,7 +32,7 @@ from homeassistant.components.conversation.agent_manager import async_get_agent
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED, MATCH_ALL, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.network import get_url
@@ -96,6 +96,8 @@ from .const import (
     RUN_MAX_AGE,
     SHORT_COMMANDS,
     STARTUP_CHECK_DELAY,
+    REPLY_RECENT,
+    REPLY_WAIT,
     SUMMONED_MESSAGE,
     UNAVAILABLE_MESSAGE,
 )
@@ -309,6 +311,9 @@ class SmartListeningAgent(conversation.ConversationEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._classifier = make_classifier(self.hass, self._classifier_kind, *self._classifier_opts)
+        agents = self.hass.data.setdefault(DOMAIN, {}).setdefault("agents", {})
+        agents[self.entity_id] = self
+        self.async_on_remove(lambda: agents.pop(self.entity_id, None))
 
         @callback
         def _is_listening(event_data) -> bool:
@@ -636,8 +641,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
         entry = self.hass.config_entries.async_get_entry(ent.config_entry_id) if ent and ent.config_entry_id else None
         return entry.data.get("device_name") if entry else None
 
-    def _greeting_url(self, satellite: str) -> str:
-        """The greeting in the satellite's own pipeline voice, as an absolute URL."""
+    def _tts_url(self, satellite: str, message: str) -> str:
+        """The message in the satellite's own pipeline voice, as an absolute URL."""
         from homeassistant.components import tts  # noqa: PLC0415
         from homeassistant.components.assist_pipeline import async_get_pipeline  # noqa: PLC0415
 
@@ -645,49 +650,128 @@ class SmartListeningAgent(conversation.ConversationEntity):
         pipeline = async_get_pipeline(self.hass, sat._resolve_pipeline() if sat else None)  # noqa: SLF001
         options = {tts.ATTR_VOICE: pipeline.tts_voice} if pipeline.tts_voice else {}
         stream = tts.async_create_stream(self.hass, pipeline.tts_engine, pipeline.tts_language, options)
-        stream.async_set_message(SUMMONED_MESSAGE)
+        stream.async_set_message(message)
         return get_url(self.hass, prefer_external=False) + stream.url
 
     async def _greet(self, device_id: str, satellite: str) -> None:
+        await self._speak(device_id, satellite, SUMMONED_MESSAGE, listen=True)
+
+    def _replies_on_device(self, device_id: str, satellite: str) -> bool:
+        """Whether this Voice PE plays replies itself (its switch is off, or there is no room
+        speaker script to use)."""
         switch = self._device_entity(device_id, DEVICE_REPLIES)
         replies = self.hass.states.get(switch) if switch else None
-        on_device = replies is not None and replies.state == "off"
-        name = self._esphome_name(satellite)
-        if on_device or not self._reply_script or not name or self.hass.states.get(self._reply_script) is None:
-            # Replies come from the Voice PE: greet from it and listen.
+        return (
+            (replies is not None and replies.state == "off")
+            or not self._reply_script
+            or not self._esphome_name(satellite)
+            or self.hass.states.get(self._reply_script) is None
+        )
+
+    async def _speak(self, device_id: str, satellite: str, message: str, listen: bool) -> str:
+        """Say a message from the speaker this Voice PE's replies come from, then listen if
+        asked. Returns "voice_pe" or "room_speaker"."""
+        if self._replies_on_device(device_id, satellite):
+            if listen:
+                await self.hass.services.async_call(
+                    "assist_satellite",
+                    "start_conversation",
+                    {"entity_id": satellite, "start_message": message, "preannounce": False},
+                    blocking=False,
+                )
+            else:
+                await self.hass.services.async_call(
+                    "assist_satellite",
+                    "announce",
+                    {"entity_id": satellite, "message": message, "preannounce": False},
+                    blocking=False,
+                )
+            return "voice_pe"
+        # Replies come from the room speaker: play the message there through the same script.
+        # To listen afterwards, the Voice PE plays it muted, then listens (as after any reply).
+        url = self._tts_url(satellite, message)
+        if listen:
+            player = next(
+                (e.entity_id for e in er.async_entries_for_device(er.async_get(self.hass), device_id)
+                 if e.domain == "media_player" and e.platform == "esphome"),
+                None,
+            )
+            if player and (state := self.hass.states.get(player)) is not None:
+                volume = state.attributes.get("volume_level")
+                if volume is not None:
+                    self._restore_volume[satellite] = (player, float(volume))
+                    await self.hass.services.async_call(
+                        "media_player", "volume_set", {"entity_id": player, "volume_level": 0}, blocking=True
+                    )
+                    async_call_later(self.hass, 20, lambda _now: self._restore(satellite))
+        domain, _, object_id = self._reply_script.partition(".")
+        await self.hass.services.async_call(
+            domain, object_id, {"url": url, "satellite": self._esphome_name(satellite)}, blocking=False
+        )
+        if listen:
             await self.hass.services.async_call(
                 "assist_satellite",
                 "start_conversation",
-                {"entity_id": satellite, "start_message": SUMMONED_MESSAGE, "preannounce": False},
+                {"entity_id": satellite, "start_media_id": url, "preannounce": False},
                 blocking=False,
             )
-            return
-        # Replies come from the room speaker: play the greeting there through the same script,
-        # while the Voice PE plays it muted, then listens (as after any reply).
-        url = self._greeting_url(satellite)
-        player = next(
-            (e.entity_id for e in er.async_entries_for_device(er.async_get(self.hass), device_id)
-             if e.domain == "media_player" and e.platform == "esphome"),
-            None,
-        )
-        if player and (state := self.hass.states.get(player)) is not None:
-            volume = state.attributes.get("volume_level")
-            if volume is not None:
-                self._restore_volume[satellite] = (player, float(volume))
-                await self.hass.services.async_call(
-                    "media_player", "volume_set", {"entity_id": player, "volume_level": 0}, blocking=True
-                )
-                async_call_later(self.hass, 20, lambda _now: self._restore(satellite))
-        domain, _, object_id = self._reply_script.partition(".")
-        await self.hass.services.async_call(
-            domain, object_id, {"url": url, "satellite": name}, blocking=False
-        )
-        await self.hass.services.async_call(
-            "assist_satellite",
-            "start_conversation",
-            {"entity_id": satellite, "start_media_id": url, "preannounce": False},
-            blocking=False,
-        )
+        return "room_speaker"
+
+    def find_voice_pe(self, area: str | None, satellite: str | None) -> tuple[str, str, float] | None:
+        """(device_id, satellite, how recent) for a late reply: the given satellite, the Voice
+        PE in the area that uses this agent, or the one this agent last heard a request from."""
+        if satellite:
+            ent = er.async_get(self.hass).async_get(satellite)
+            if ent is None or ent.domain != "assist_satellite" or not ent.device_id:
+                return None
+            return ent.device_id, satellite, 0.0
+        if area:
+            areas = ar.async_get(self.hass)
+            wanted = area.strip().casefold()
+            found = areas.async_get_area(area) or next(
+                (a for a in areas.async_list_areas()
+                 if a.name.casefold() == wanted or wanted in {x.casefold() for x in (a.aliases or ())}),
+                None,
+            )
+            if found is None:
+                return None
+            devices = dr.async_get(self.hass)
+            for ent in list(er.async_get(self.hass).entities.values()):
+                if ent.domain != "assist_satellite" or not ent.device_id:
+                    continue
+                device = devices.async_get(ent.device_id)
+                where = ent.area_id or (device.area_id if device else None)
+                if where == found.id and self._uses_me(ent.entity_id):
+                    return ent.device_id, ent.entity_id, 0.0
+            return None
+        now = dt_util.utcnow()
+        recent = [(when, device_id) for device_id, when in self._last_process.items()
+                  if (now - when).total_seconds() <= REPLY_RECENT]
+        if not recent:
+            return None
+        when, device_id = max(recent)
+        sat = self._satellite(device_id)
+        return (device_id, sat, (now - when).total_seconds()) if sat else None
+
+    async def async_late_reply(
+        self, device_id: str, satellite: str, message: str, listen: bool | None, area: str | None
+    ) -> dict[str, Any]:
+        """smart_listening.reply: a late answer to a voice request, from the speaker that
+        room's replies come from."""
+        listen = self._keep_listening if listen is None else listen
+        # Let a reply still playing ("On it.") finish first.
+        for _ in range(int(REPLY_WAIT / 0.25)):
+            state = self.hass.states.get(satellite)
+            if state is None or state.state != "responding":
+                break
+            await asyncio.sleep(0.25)
+        speaker = await self._speak(device_id, satellite, message, listen)
+        self._last_reply[device_id] = (time.monotonic(), message)
+        if listen:
+            self._invited[device_id] = (time.monotonic(), "reply")
+        self._log({"kind": "late_reply", "device_id": device_id, "area": area, "satellite": satellite,
+                   "speaker": speaker, "listen": listen, "reply": message})
+        return {"satellite": satellite, "speaker": speaker}
 
     @callback
     def _restore(self, satellite: str) -> None:

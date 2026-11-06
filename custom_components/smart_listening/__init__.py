@@ -7,17 +7,63 @@ decides whether that speech was meant for its assistant and, if so, passes it on
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.typing import ConfigType
+import voluptuous as vol
 
-from .const import DOMAIN
+from .const import DOMAIN, SERVICE_REPLY
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = [Platform.CONVERSATION]
+
+REPLY_SCHEMA = vol.Schema(
+    {
+        vol.Required("message"): cv.string,
+        vol.Optional("area"): cv.string,
+        vol.Optional("satellite"): cv.entity_id,
+        vol.Optional("listen"): cv.boolean,
+        vol.Optional("agent"): cv.entity_id,
+    }
+)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register smart_listening.reply: late replies from an agent, on the room's reply speaker."""
+
+    async def _reply(call: ServiceCall) -> ServiceResponse:
+        return await async_reply(hass, dict(call.data))
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_REPLY, _reply, schema=REPLY_SCHEMA, supports_response=SupportsResponse.OPTIONAL
+    )
+    return True
+
+
+async def async_reply(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """Find the Voice PE (and the Smart Listening agent it uses) and say the message there."""
+    agents = dict(hass.data.get(DOMAIN, {}).get("agents", {}))
+    wanted = data.get("agent")
+    if wanted:
+        if wanted not in agents:
+            raise ServiceValidationError(f"{wanted} is not a Smart Listening agent")
+        agents = {wanted: agents[wanted]}
+    if not agents:
+        raise ServiceValidationError("No Smart Listening agent is set up")
+    area, satellite = data.get("area"), data.get("satellite")
+    found = [(agent, hit) for agent in agents.values() if (hit := agent.find_voice_pe(area, satellite))]
+    if not found:
+        where = f"area {area}" if area else satellite or "a recent voice request"
+        raise ServiceValidationError(f"No Voice PE found for {where}")
+    agent, (device_id, sat, _age) = min(found, key=lambda f: f[1][2])  # most recent request
+    return await agent.async_late_reply(device_id, sat, data["message"], data.get("listen"), area)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
