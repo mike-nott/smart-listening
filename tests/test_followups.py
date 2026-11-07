@@ -325,3 +325,38 @@ def _ended_run(monkeypatch, hint_after, handled=False):
 def test_run_ended_greets_only_when_the_name_opened_the_speech(monkeypatch, hint_after, handled, greets):
     summoned = _ended_run(monkeypatch, hint_after, handled)
     assert summoned == ([("dev", "wake word, no speech")] if greets else [])
+
+
+@pytest.mark.asyncio
+async def test_greeting_volume_comes_back_when_listening_ends_not_when_it_starts(monkeypatch):
+    """0.6.1: the Voice PE reports the end of its muted greeting before the last of it has
+    played, so the volume is restored when it stops listening."""
+    a, services = _greeter(monkeypatch, replies_switch="on", script=True)
+    await a._greet("dev", SAT)
+    listeners = []
+    a.hass.bus = SimpleNamespace(async_listen=lambda ev, cb, event_filter=None: listeners.append((cb, event_filter)) or (lambda: None))
+    a.hass.data = {}
+    a.entity_id = "conversation.smart_listening_nova"
+    a.async_on_remove = lambda f: None
+
+    async def _noop(self):
+        return None
+
+    monkeypatch.setattr(slc.conversation.ConversationEntity, "async_added_to_hass", _noop)
+    monkeypatch.setattr(slc, "make_classifier", lambda *args: None)
+    monkeypatch.setattr(slc, "async_at_started", lambda hass, cb: (lambda: None))
+    await a.async_added_to_hass()
+
+    def fire(old, new):
+        data = {"entity_id": SAT, "old_state": SimpleNamespace(state=old, last_changed=slc.dt_util.utcnow()),
+                "new_state": SimpleNamespace(state=new, last_changed=slc.dt_util.utcnow())}
+        for cb, flt in listeners:
+            if flt is None or flt(data):
+                cb(SimpleNamespace(data=data))
+
+    restored = []
+    a._restore = lambda sat: restored.append(sat)
+    fire("responding", "listening")
+    assert restored == []
+    fire("listening", "processing")
+    assert restored == [SAT]

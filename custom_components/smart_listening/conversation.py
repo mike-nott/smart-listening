@@ -329,7 +329,6 @@ class SmartListeningAgent(conversation.ConversationEntity):
             entity, new = event.data["entity_id"], event.data["new_state"]
             old = event.data.get("old_state")
             self._run_started[entity] = new.last_changed
-            self._restore(entity)
             ended = self._reply_ended.get(entity)
             self._run_after_reply[entity] = (old is not None and old.state == "responding") or (
                 ended is not None and (new.last_changed - ended).total_seconds() <= OPEN_MIC_GAP
@@ -345,6 +344,27 @@ class SmartListeningAgent(conversation.ConversationEntity):
                 and new is not None
                 and new.state != "responding"
             )
+
+        # A greeting played on the room speaker keeps the Voice PE muted until it stops
+        # listening: it reports the end of its muted copy before the last of it has played,
+        # so restoring the volume when listening starts let that tail be heard.
+        @callback
+        def _left_listening(event_data) -> bool:
+            old, new = event_data.get("old_state"), event_data.get("new_state")
+            return (
+                event_data["entity_id"].startswith("assist_satellite.")
+                and old is not None
+                and old.state == "listening"
+                and (new is None or new.state != "listening")
+            )
+
+        @callback
+        def _restore_after_listening(event: Event) -> None:
+            self._restore(event.data["entity_id"])
+
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_STATE_CHANGED, _restore_after_listening, event_filter=_left_listening)
+        )
 
         @callback
         def _record_reply_end(event: Event) -> None:
