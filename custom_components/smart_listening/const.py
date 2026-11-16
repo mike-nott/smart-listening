@@ -147,6 +147,8 @@ ECHO_FILLERS = ("you", "today", "and", "so", "um", "uh", "mm", "hmm", "oh", "oka
 # the name this soon after the run started (the name opened the speech). A name heard
 # later in a conversation is someone talking, or a false wake.
 NAME_START_WINDOW = 1.5
+# A wake word hint this long before the run started belongs to an earlier run.
+HINT_BEFORE_RUN = 0.5
 
 # smart_listening.reply: a late reply from an agent ("On it." now, the result later),
 # played where the room's replies play and not through announcements.

@@ -9,7 +9,7 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **No Wake Word, No Chime**: Say the assistant's name anywhere in a sentence, at normal speed
 - ✅ **Ghost Wake Protection**: TV, radio and conversations that mention the name are judged before anything answers
 - ✅ **Fuzzy Name Matching**: Transcription slips such as "Novva" still count as the name
-- ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said
+- ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said. It counts only in the first 1.5 s of the speech, so a name the model hears in the middle of TV or a conversation doesn't start a request
 - ✅ **Natural Follow-ups**: The Voice PE listens again straight after each answer, so you can carry on without the name; each follow-up is judged too
 - ✅ **Classic Wake Word Too**: Say just "Nova" and pause: it answers "Hi, how can I help?" from the same speaker as its replies, and listens
 - ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored, even when someone talks over it: only what they said is judged
@@ -39,7 +39,7 @@ Smart Listening hears the whole sentence before deciding, so it can tell the dif
 1. **The Voice PE hears speech.** With the Smart Listening switch on, the device's voice activity detector starts a request whenever someone speaks. No wake word, no chime, no LEDs.
 2. **Home Assistant transcribes it** with your speech-to-text engine, as for any Assist request.
 3. **Smart Listening judges the transcript**, in this order:
-   - Did the device's wake word model trigger during this speech? Then the name was said, even if the transcript lost it.
+   - Did the device's wake word model trigger in the first 1.5 s of this speech? Then the name was said, even if the transcript lost it.
    - Is this the assistant's last reply, heard back? Ignore it. If someone spoke over it, take the reply's words out and judge only theirs.
    - In a follow-up, does a sentence end with "stop", "shut up", "be quiet", "cancel" or "never mind"? Say nothing and stop listening ("Stop the music" is still a request).
    - Is it the name followed by a short command ("stop", "cancel", "thank you")? Answer it.

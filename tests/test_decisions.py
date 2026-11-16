@@ -686,3 +686,39 @@ async def test_repeating_part_of_the_reply_after_the_name_is_a_request():
     r = await decide(make_agent(FakeClassifier(address=0.99, followup=0.99), last_reply=(5, reply)),
                      "Nova, turn off the kitchen lights.")
     assert r["answer"] and r.get("reason") != "echo of last reply" and "request" not in r
+
+
+def _hint_agent(hint_at, run_at):
+    """An agent whose device heard "Alexa" at hint_at, in a run that started at run_at (seconds ago)."""
+    from datetime import timedelta
+    from homeassistant.util import dt as dt_util
+
+    now = dt_util.utcnow()
+    agent = make_agent(FakeClassifier(address=0.99, followup=0.1))
+    del agent._wake_hint  # use the real one
+    state = SimpleNamespace(state="Alexa", last_changed=now - timedelta(seconds=hint_at))
+    agent.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: state))
+    agent._device_entity = lambda device_id, suffix: "sensor.wake_word"
+    agent._satellite = lambda device_id: "assist_satellite.lr"
+    agent._run_started["assist_satellite.lr"] = now - timedelta(seconds=run_at)
+    return agent
+
+
+@pytest.mark.parametrize("hint_at, run_at, used", [
+    (15.0, 15.6, True),    # name 0.6 s into the run: it opened the request
+    (1.0, 15.3, False),    # name 14.3 s into the run (live 2026-11-16 18:27)
+    (20.0, 3.0, False),    # left over from an earlier run
+    (3.2, 3.0, True),      # heard just before the run flag (detection opens the run)
+])
+def test_wake_hint_counts_only_at_the_start_of_the_run(hint_at, run_at, used):
+    agent = _hint_agent(hint_at, run_at)
+    assert (agent._wake_hint("dev") == "Alexa") is used
+
+
+@pytest.mark.asyncio
+async def test_late_wake_word_does_not_make_speech_a_request():
+    # Live 2026-11-16 18:27: "Alexa" 14.3 s into talk, transcript "Lighters." was answered.
+    agent = _hint_agent(1.0, 15.3)
+    agent._names = ("Lorelai", "Alexa")
+    r = await decide(agent, "Lighters.")
+    assert not r["answer"] and r["wake_hint"] is None and r["late_hint"] == 14.3

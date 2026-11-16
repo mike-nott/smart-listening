@@ -83,6 +83,7 @@ from .const import (
     DEVICE_WAKE_WORD,
     DOMAIN,
     ECHO_SIMILARITY,
+    HINT_BEFORE_RUN,
     NAME_START_WINDOW,
     ECHO_FILLERS,
     ECHO_ADDRESSED_WORDS,
@@ -336,6 +337,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
         self._last_reply: dict[str, tuple[float, str]] = {}
         # assist_satellite entity_id -> when it last started listening (start of a run)
         self._run_started: dict[str, Any] = {}
+        # Seconds into the run of a wake word hint that came too late to count, per device.
+        self._late_hint: dict[str, float] = {}
         # assist_satellite entity_id -> when it last stopped "responding" (a reply ended),
         # and whether its latest run started straight after that (HA's open microphone).
         self._reply_ended: dict[str, Any] = {}
@@ -578,10 +581,19 @@ class SmartListeningAgent(conversation.ConversationEntity):
         if state is None or (dt_util.utcnow() - state.last_changed).total_seconds() >= RUN_MAX_AGE:
             return None
         heard = state.state.strip().lower()
-        for name in self._names:
-            if name.lower() in heard:
-                return name
-        return None
+        name = next((n for n in self._names if n.lower() in heard), None)
+        if name is None:
+            return None
+        # The name opens a request. Heard seconds into someone talking (TV, a
+        # conversation), it is a false wake: "Alexa" 14 s into a run turned "Lighters."
+        # into "Alexa, Lighters." and was answered (live 2026-11-16 18:27).
+        started = self._run_started.get(self._satellite(device_id) or "")
+        if started is not None:
+            after = (state.last_changed - started).total_seconds()
+            if after > NAME_START_WINDOW or after < -HINT_BEFORE_RUN:
+                self._late_hint[device_id or ""] = round(after, 1)
+                return None
+        return name
 
     def _show_thinking(self, device_id: str | None) -> None:
         """Ask the device to show its thinking LEDs now that the request is accepted."""
@@ -1106,7 +1118,9 @@ class SmartListeningAgent(conversation.ConversationEntity):
     async def _assess(self, user_input: conversation.ConversationInput, invited: bool = False) -> dict[str, Any]:
         text = user_input.text.strip()
         score, name, pos, rest = _name_match(text, self._names)
+        self._late_hint.pop(user_input.device_id or "", None)
         hint = self._wake_hint(user_input.device_id)
+        late = self._late_hint.pop(user_input.device_id or "", None)
         if hint and score < NAME_THRESHOLD:
             # The start of the speech (the name) was clipped; the wake word model heard it.
             text = f"{hint}, {text}"
@@ -1121,6 +1135,8 @@ class SmartListeningAgent(conversation.ConversationEntity):
             "wake_hint": hint,
             "classifier": self._classifier_kind,
         }
+        if late is not None:
+            rec["late_hint"] = late
 
         prev = self._last_reply.get(user_input.device_id or "")
         in_followup = False
