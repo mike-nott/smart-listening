@@ -136,8 +136,13 @@ NAME_ASK_THRESHOLD = 0.5
 NAME_ONLY_POSITION = 3
 # Speech this similar to the last reply is the speaker being overheard.
 ECHO_SIMILARITY = 0.6
-# The greeting heard back at the start of the request after it ("Hi, how can I help?").
-GREETING_ECHO_SIMILARITY = 0.75
+# A run of at least this many words copied from the last reply (or the greeting) is the
+# speaker heard back, wherever it is in the transcript, and is taken out before judging.
+ECHO_MIN_WORDS = 4
+# With the name at the start (or heard by the wake word model), only this long a copy counts.
+ECHO_ADDRESSED_WORDS = 8
+# What is left after the echo is taken out counts as nothing if it is only these.
+ECHO_FILLERS = ("you", "today", "and", "so", "um", "uh", "mm", "hmm", "oh", "okay", "ok", "the", "a", "are")
 # A speech run that ends without a transcript greets only if the wake word model heard
 # the name this soon after the run started (the name opened the speech). A name heard
 # later in a conversation is someone talking, or a false wake.
@@ -163,6 +168,13 @@ SHORT_COMMANDS = (
     "stop", "cancel", "pause", "resume", "goodnight", "good night", "never mind",
     "nevermind", "quiet", "be quiet", "shut up", "louder", "quieter", "volume up",
     "volume down", "turn it up", "turn it down", "thanks", "thank you",
+)
+
+# Said in a follow-up (after a reply or the greeting), these end the conversation: no
+# reply, and the microphone closes. They must end a sentence ("Stop." but not "Stop the music").
+STOP_PHRASES = (
+    "stop", "stop it", "stop talking", "stop listening", "shut up", "be quiet", "quiet please",
+    "cancel", "never mind", "nevermind", "that's enough", "go away",
 )
 
 LOG_FILE = "smart_listening/decisions.jsonl"

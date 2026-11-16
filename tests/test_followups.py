@@ -207,13 +207,95 @@ async def test_greeting_heard_back_alone_is_ignored(monkeypatch):
 
 @pytest.mark.parametrize("heard, rest", [
     ("Hi, how can I help?", ""),
-    ("Hi how can I help you?", ""),
+    ("Hi how can I help you?", "you?"),
     ("How can I help? Turn the lights off.", "Turn the lights off."),
     ("Turn the lights off.", "Turn the lights off."),
     ("Hi, what's the weather?", "Hi, what's the weather?"),
+    ("Oh my god! How can I help? Shut up.", "Oh my god! Shut up."),
 ])
-def test_strip_echo(heard, rest):
-    assert slc._strip_echo(heard, "Hi, how can I help?")[0] == rest
+def test_remove_echo_of_the_greeting(heard, rest):
+    assert slc._remove_echo(heard, "Hi, how can I help?")[0] == rest
+
+
+# Live 2026-11-16 18:27: the reply played on the Sonos, the open-mic run heard its second
+# half with "Stop." in the middle, missed the echo check (0.58 < 0.6) and was answered.
+LIGHTS_REPLY = ("Alrighty , the Living Room has two lights: the Side Lamps and the Living Room Spotlights, "
+                "and they're both currently on. Did you want me to switch them both off, or just one of them? "
+                "(Also, \"lighters\" , are we lighting candles, or is that just autocorrect having a moment?)")
+LIGHTS_HEARD = ("Living room spotlights are currently on. Did you want me to switch them both off or just one of "
+                "them? Stop. Also, lighters. Are we lighting candles or is that just autocorrect having a moment?")
+
+
+def test_remove_echo_of_a_reply_keeps_what_was_said_over_it():
+    rest, removed = slc._remove_echo(LIGHTS_HEARD, LIGHTS_REPLY)
+    assert removed >= 20 and "Stop." in rest and "candles" not in rest
+
+
+@pytest.mark.parametrize("text, stop", [
+    ("Stop.", True), ("Stop", True), ("Shut up!", True), ("Stop, Nova.", True), ("Nova, stop.", True),
+    ("Oh my god! Shut up.", True), ("Okay, that's enough.", True), ("Never mind.", True),
+    ("Living room spotlights are currently on. Stop.", True), ("Stop please.", True),
+    ("Stop the music.", False), ("Don't stop.", False), ("Can you cancel the timer?", False),
+    ("What's the bus stop called?", False), ("Yes please.", False), ("", False),
+])
+def test_is_stop(text, stop):
+    assert slc._is_stop(text, ("Nova", "Alexa")) is stop
+
+
+def _replied_room(monkeypatch, reply):
+    room = Room(monkeypatch, followup=0.95, address=0.95)
+    room.agent._last_reply["dev"] = (slc.time.monotonic() - 20, reply)
+    room.agent._invited["dev"] = (slc.time.monotonic(), "reply")
+    room.speech_run = False
+    room.agent._run_after_reply[SAT] = True
+    return room
+
+
+@pytest.mark.asyncio
+async def test_stop_said_over_the_reply_echo_ends_the_conversation(monkeypatch):
+    room = _replied_room(monkeypatch, LIGHTS_REPLY)
+    result, rec = await room.say(LIGHTS_HEARD)
+    assert rec["reason"] == "stop" and rec["answer"] is False and room.forwarded == []
+    assert result.response.speech["plain"]["speech"] == "" and result.continue_conversation is False
+    assert "dev" not in room.agent._invited
+
+
+@pytest.mark.asyncio
+async def test_reply_echo_alone_is_ignored(monkeypatch):
+    room = _replied_room(monkeypatch, LIGHTS_REPLY)
+    result, rec = await room.say("Did you want me to switch them both off or just one of them?")
+    assert rec["reason"] == "echo of last reply" and room.forwarded == []
+
+
+@pytest.mark.asyncio
+async def test_followup_over_the_reply_echo_is_passed_on_without_it(monkeypatch):
+    room = _replied_room(monkeypatch, LIGHTS_REPLY)
+    result, rec = await room.say("Did you want me to switch them both off or just one of them? Just the side lamps.")
+    assert rec["answer"] and room.forwarded == ["Just the side lamps."]
+
+
+@pytest.mark.asyncio
+async def test_plain_stop_in_a_followup_ends_the_conversation(monkeypatch):
+    room = _replied_room(monkeypatch, "It's 5:28. Anything else?")
+    result, rec = await room.say("Stop.")
+    assert rec["reason"] == "stop" and room.forwarded == []
+
+
+@pytest.mark.asyncio
+async def test_shut_up_after_a_false_wake_greeting_says_nothing(monkeypatch):
+    # Live 2026-11-14 22:14: a false wake, then "Oh my god! How can I help? Shut up." was answered.
+    room = _summoned_room(monkeypatch)
+    result, rec = await room.say("Oh my god! How can I help? Shut up.")
+    assert rec["reason"] == "stop" and room.forwarded == []
+    assert result.response.speech["plain"]["speech"] == ""
+
+
+@pytest.mark.asyncio
+async def test_stop_the_music_in_a_followup_is_still_a_request(monkeypatch):
+    room = _replied_room(monkeypatch, "It's 5:28. Anything else?")
+    result, rec = await room.say("Stop the music.")
+    assert rec["answer"] and room.forwarded == ["Stop the music."]
+
 
 class _Services:
     def __init__(self):

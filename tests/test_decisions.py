@@ -667,3 +667,22 @@ async def test_old_reply_is_not_an_echo():
     reply = "It's ten fifty-seven in the morning. You've got the whole day ahead of you."
     r = await decide(make_agent(FakeClassifier(address=0.1, followup=0.1), last_reply=(90, reply)), reply)
     assert r.get("reason") != "echo of last reply"
+
+
+@pytest.mark.asyncio
+async def test_reply_heard_back_with_a_wake_word_hint_is_an_echo():
+    # Live 2026-11-09 09:09: the wake word model heard "Alexa" in the reply played on the
+    # speaker, so the echo opened with the name and was answered.
+    reply = ("Ah, so you're after a lunchtime, like a quiet, calm lunchtime, not a loud one. "
+             "Do you want me to look for somewhere nearby?")
+    r = await decide(make_agent(FakeClassifier(address=0.99, followup=0.99), hint="Alexa", last_reply=(8, reply)),
+                     "Ah, so you're after a lunchtime, like a quiet, calm lunchtime, not a loud")
+    assert not r["answer"] and r["reason"] == "echo of last reply"
+
+
+@pytest.mark.asyncio
+async def test_repeating_part_of_the_reply_after_the_name_is_a_request():
+    reply = "Do you want me to turn off the kitchen lights?"
+    r = await decide(make_agent(FakeClassifier(address=0.99, followup=0.99), last_reply=(5, reply)),
+                     "Nova, turn off the kitchen lights.")
+    assert r["answer"] and r.get("reason") != "echo of last reply" and "request" not in r

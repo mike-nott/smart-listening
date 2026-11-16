@@ -83,8 +83,10 @@ from .const import (
     DEVICE_WAKE_WORD,
     DOMAIN,
     ECHO_SIMILARITY,
-    GREETING_ECHO_SIMILARITY,
     NAME_START_WINDOW,
+    ECHO_FILLERS,
+    ECHO_ADDRESSED_WORDS,
+    ECHO_MIN_WORDS,
     ECHO_WINDOW,
     OPEN_MIC_GAP,
     OPEN_MIC_WINDOW,
@@ -95,6 +97,7 @@ from .const import (
     NAME_THRESHOLD,
     RUN_MAX_AGE,
     SHORT_COMMANDS,
+    STOP_PHRASES,
     STARTUP_CHECK_DELAY,
     REPLY_RECENT,
     REPLY_WAIT,
@@ -154,28 +157,64 @@ def _silent(user_input: conversation.ConversationInput) -> conversation.Conversa
     )
 
 
-def _strip_echo(text: str, said: str) -> tuple[str, bool]:
-    """Remove copies of what the assistant just said (heard back from the speaker) from the
-    start of a transcript: "Hi, how can I help? Hi, how can I help? What time is it?" gives
-    "What time is it?". Returns the rest and whether anything was removed."""
-    target = " ".join(re.findall(r"[a-z0-9']+", said.lower()))
-    n = len(target.split())
+def _words(text: str) -> list[str]:
+    return [w for w in (re.sub(r"[^a-z0-9']", "", t.lower()) for t in text.split())]
+
+
+def _remove_echo(text: str, said: str) -> tuple[str, int]:
+    """Take out of a transcript every run of ECHO_MIN_WORDS or more words copied from what
+    the assistant just said (heard back from the speaker), wherever it is: "Did you want me
+    to switch them off? Stop. Also, are we lighting candles?" after that reply gives "Stop.".
+    Returns the rest (original wording) and how many words were taken out."""
     tokens = text.split()
-    removed = False
-    while tokens and n:
-        best_k, best = 0, 0.0
-        for k in range(max(1, n - 1), min(len(tokens), n + 1) + 1):
-            head = " ".join(re.findall(r"[a-z0-9']+", " ".join(tokens[:k]).lower()))
-            ratio = difflib.SequenceMatcher(None, head, target).ratio()
-            if ratio > best:
-                best_k, best = k, ratio
-        if best < GREETING_ECHO_SIMILARITY:
+    target = [w for w in _words(said) if w]
+    if len(target) < ECHO_MIN_WORDS:
+        return text, 0
+    keep = list(range(len(tokens)))
+    removed = 0
+    while True:
+        # Each pass takes out the copies it finds; a reply heard twice needs a second pass.
+        words = [re.sub(r"[^a-z0-9']", "", tokens[i].lower()) for i in keep]
+        idx = [k for k, w in enumerate(words) if w]  # punctuation-only tokens don't count
+        sm = difflib.SequenceMatcher(None, [words[k] for k in idx], target, autojunk=False)
+        drop: set[int] = set()
+        for block in sm.get_matching_blocks():
+            if block.size >= ECHO_MIN_WORDS:
+                drop.update(idx[block.a + j] for j in range(block.size))
+        if not drop:
             break
-        tokens = tokens[best_k:]
-        removed = True
-        while tokens and tokens[0].strip(".,!?").lower() in ("you", "today"):
-            tokens = tokens[1:]  # "...how can I help you?"
-    return " ".join(tokens), removed
+        removed += len(drop)
+        keep = [i for k, i in enumerate(keep) if k not in drop]
+    rest = " ".join(tokens[i] for i in keep)
+    if removed:
+        rest = rest.strip(" ,;:")
+    return rest, removed
+
+
+def _only_fillers(text: str) -> bool:
+    return all(w in ECHO_FILLERS for w in _words(text) if w)
+
+
+_STOP_RE = re.compile(
+    r"(?:^|(?<=[\s.,!?]))(?<![a-z'])("
+    + "|".join(re.escape(p).replace(r"\ ", r"\s+") for p in sorted(STOP_PHRASES, key=len, reverse=True))
+    + r")(?:[\s,]+please)?\s*(?:[.,!?]|$)",
+    re.IGNORECASE,
+)
+_NEGATIONS = ("don't", "dont", "do not", "not", "never", "can't", "cant", "won't", "wont", "didn't", "didnt")
+
+
+def _is_stop(text: str, names: tuple[str, ...]) -> bool:
+    """True if a sentence ends with a stop phrase ("Stop.", "Shut up!", "Stop, Lorelai."),
+    not "Stop the music" or "Don't stop."."""
+    clean = text
+    for name in names:
+        clean = re.sub(rf"\b{re.escape(name)}\b", "", clean, flags=re.IGNORECASE)
+    for m in _STOP_RE.finditer(clean):
+        before = clean[: m.start()].rstrip(" ,").lower()
+        if not any(before.endswith(n) for n in _NEGATIONS):
+            return True
+    return False
 
 
 def _spoken(user_input: conversation.ConversationInput, speech: str) -> conversation.ConversationResult:
@@ -812,24 +851,31 @@ class SmartListeningAgent(conversation.ConversationEntity):
                 # The name was said on its own and we asked "How can I help?": this is the
                 # request, once the greeting heard back from the speaker is taken off.
                 heard = user_input.text.strip()
-                text, echo = _strip_echo(heard, SUMMONED_MESSAGE)
+                text, removed = _remove_echo(heard, SUMMONED_MESSAGE)
+                if removed:
+                    tokens = text.split()
+                    while tokens and tokens[0].strip(".,!?").lower() in ("you", "today"):
+                        tokens = tokens[1:]  # "...how can I help you?"
+                    text = " ".join(tokens)
                 rec = {"kind": "open_mic", "device_id": user_input.device_id, "text": heard,
-                       "answer": bool(text.strip(" .,!?")), "reason": "after the name"}
-                if echo:
+                       "answer": not _only_fillers(text), "reason": "after the name"}
+                if removed:
                     rec["request"] = text
+                    rec["echo_words"] = removed
+                if _is_stop(text, self._names):
+                    return self._stop(user_input, rec)
                 if not rec["answer"]:
-                    if echo:
+                    if removed:
                         rec["reason"] = "greeting echo only"
                     self._log(rec)
                     return _silent(user_input)
-                if echo:
-                    user_input = copy.copy(user_input)
-                    user_input.text = text
                 return await self._answer(user_input, rec)
             if why == "reply":
                 # Judged like speech, with the follow-up check always asked.
                 rec = await self._assess(user_input, invited=True)
                 rec["kind"] = "open_mic"
+                if rec.get("reason") == "stop":
+                    return self._stop(user_input, rec)
                 if not rec["answer"]:
                     self._log(rec)
                     return _silent(user_input)
@@ -853,6 +899,14 @@ class SmartListeningAgent(conversation.ConversationEntity):
             self._log(rec)
             return _silent(user_input)
         return await self._answer(user_input, rec)
+
+    def _stop(
+        self, user_input: conversation.ConversationInput, rec: dict[str, Any]
+    ) -> conversation.ConversationResult:
+        """"Stop." in a follow-up: say nothing and close the microphone."""
+        self._invited.pop(user_input.device_id or "", None)
+        self._log({**rec, "answer": False, "reason": "stop"})
+        return _silent(user_input)
 
     def _note_invitation(
         self, user_input: conversation.ConversationInput, result: conversation.ConversationResult, rec: dict[str, Any]
@@ -881,6 +935,10 @@ class SmartListeningAgent(conversation.ConversationEntity):
             self._log({**rec, "reply": SUMMONED_MESSAGE, "continue": True})
             return result
 
+        if rec.get("request") and rec["request"] != user_input.text:
+            # The speaker heard back was taken out: pass on only what the person said.
+            user_input = copy.copy(user_input)
+            user_input.text = rec["request"]
         self._show_thinking(user_input.device_id)
         start = time.monotonic()
         result, timer = await self._try_timer(user_input, rec["text"])
@@ -1076,13 +1134,32 @@ class SmartListeningAgent(conversation.ConversationEntity):
             # talking to the assistant ("Lorelai, set a timer for 10 seconds" after
             # "Timer set for 10 seconds."), not the reply.
             addressed = hint is not None or (score >= NAME_THRESHOLD and pos == 0)
-            if (
-                prev[1]
-                and not addressed
-                and rec["since_reply"] <= ECHO_WINDOW
-                and difflib.SequenceMatcher(None, text.lower(), prev[1].lower()).ratio() >= ECHO_SIMILARITY
-            ):
-                return {**rec, "answer": False, "reason": "echo of last reply"}
+            if prev[1] and rec["since_reply"] <= ECHO_WINDOW:
+                if not addressed and difflib.SequenceMatcher(None, text.lower(), prev[1].lower()).ratio() >= ECHO_SIMILARITY:
+                    return {**rec, "answer": False, "reason": "echo of last reply"}
+                # Part of the reply heard back, with the person talking over it: judge only
+                # what is left ("...one of them? Stop. Also, lighters..." gives "Stop.").
+                rest_text, removed = _remove_echo(text, prev[1])
+                if removed and addressed:
+                    # The name opens it: the person may be repeating the reply's words
+                    # ("Lorelai, turn off the kitchen lights"). Only a long copy with nothing
+                    # but the name left is the reply heard back (the wake word model can hear
+                    # the name in the reply, live 2026-11-09 09:09).
+                    if removed >= ECHO_ADDRESSED_WORDS and _only_fillers(_strip_name(rest_text, self._names)):
+                        return {**rec, "answer": False, "echo_words": removed, "reason": "echo of last reply"}
+                    removed = 0
+                if removed:
+                    rec["echo_words"] = removed
+                    rec["request"] = rest_text
+                    if invited and _is_stop(rest_text, self._names):
+                        return {**rec, "answer": False, "reason": "stop"}
+                    if _only_fillers(rest_text):
+                        return {**rec, "answer": False, "reason": "echo of last reply"}
+                    text = rest_text
+                    score, name, pos, rest = _name_match(text, self._names)
+                    rec.update(name=name, name_score=score, name_pos=pos)
+        if invited and _is_stop(text, self._names):
+            return {**rec, "answer": False, "reason": "stop"}
 
         named = score >= NAME_THRESHOLD
         if named and not rest.strip(" .,!?"):

@@ -12,7 +12,8 @@ Sibling projects: [MCP Assist](https://github.com/mike-nott/mcp-assist) and [Sma
 - ✅ **Wake Word Hint**: When speech detection clips the start of a sentence, the device's wake word model tells Smart Listening the name was said
 - ✅ **Natural Follow-ups**: The Voice PE listens again straight after each answer, so you can carry on without the name; each follow-up is judged too
 - ✅ **Classic Wake Word Too**: Say just "Nova" and pause: it answers "Hi, how can I help?" from the same speaker as its replies, and listens
-- ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored
+- ✅ **Echo Check**: The assistant's own reply, heard back through the microphone, is ignored, even when someone talks over it: only what they said is judged
+- ✅ **Stop Means Stop**: "Stop.", "Shut up." or "Never mind." in a follow-up ends the conversation with no reply
 - ✅ **Short Commands Always Work**: "Nova, stop", "Nova, louder" and similar are answered without a model call
 - ✅ **Honest LEDs**: The thinking ring lights only once a request has been accepted, so the device stays dark while it ignores the TV
 - ✅ **Choice of Classifier**: Clef (self-hosted or on Cloudflare), Jev (TypeSafe cloud), any OpenAI-compatible endpoint, or no model at all
@@ -39,7 +40,8 @@ Smart Listening hears the whole sentence before deciding, so it can tell the dif
 2. **Home Assistant transcribes it** with your speech-to-text engine, as for any Assist request.
 3. **Smart Listening judges the transcript**, in this order:
    - Did the device's wake word model trigger during this speech? Then the name was said, even if the transcript lost it.
-   - Is this the assistant's last reply, heard back? Ignore it.
+   - Is this the assistant's last reply, heard back? Ignore it. If someone spoke over it, take the reply's words out and judge only theirs.
+   - In a follow-up, does a sentence end with "stop", "shut up", "be quiet", "cancel" or "never mind"? Say nothing and stop listening ("Stop the music" is still a request).
    - Is it the name followed by a short command ("stop", "cancel", "thank you")? Answer it.
    - Does the transcript contain the name (fuzzy match)? If not, and it is outside the follow-up window, ignore it. No model is called.
    - Ask the classifier "Is this a request for Nova?", and within the follow-up window "Does this continue what Nova just said?"
